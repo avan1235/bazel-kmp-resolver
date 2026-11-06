@@ -1,4 +1,10 @@
 {
+  "schemaVersion": 2,
+  "resolverVersion": "dev",
+  "inputsHash": "0acdef14015476d1dad2fb94180e57a3d16320d90c0b9f89c4bb787083e37727",
+  "askedPlatforms": [
+    "jvm"
+  ],
   "askedCoordinates": [
     "io.ktor:ktor-client-cio:3.5.0",
     "org.jetbrains.kotlin:kotlin-reflect:2.4.0"
@@ -6,6 +12,7 @@
   "askedRepositories": [
     "https://repo1.maven.org/maven2"
   ],
+  "askedSubstitutions": [],
   "libraries": {
     "io.ktor:ktor-client-cio:3.5.0": {
       "id": "io.ktor:ktor-client-cio:3.5.0",

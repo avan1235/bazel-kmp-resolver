@@ -8,3 +8,5 @@
   the tag input field
     - OR, push a tag using `git` CLI directly
 - That will trigger a CI that will create a new immutable release with the relevant artifacts attached.
+- The release binaries report the tag as their version (`--version`, and the `resolverVersion` of the manifests they
+  generate), any other build reports `dev`.

@@ -1,29 +1,42 @@
 {
+  "schemaVersion": 2,
+  "resolverVersion": "dev",
+  "inputsHash": "8169c54b40f9fc2764e032d2405f15b383af0eb09a85e235f12160b3adc1573e",
+  "askedPlatforms": [
+    "wasmjs"
+  ],
   "askedCoordinates": [
     "org.jetbrains.kotlin:kotlin-reflect:2.4.0"
   ],
   "askedRepositories": [
     "https://repo1.maven.org/maven2"
   ],
+  "askedSubstitutions": [],
   "libraries": {
     "org.jetbrains.kotlin:kotlin-stdlib:2.4.0": {
       "id": "org.jetbrains.kotlin:kotlin-stdlib:2.4.0",
       "variants": [
         {
-          "type": "wasmjs",
+          "type": "klib",
+          "platform": "wasm_js",
           "id": "org.jetbrains.kotlin:kotlin-stdlib:2.4.0",
           "variantId": "org.jetbrains.kotlin:kotlin-stdlib-wasm-js:2.4.0",
           "dependencies": [],
           "exportedDependencies": [],
-          "klib": {
-            "integrity": "sha512-J9Vz6SLs71t58T0sdbSerBvL4YYCmmk7Y4vJdQZ47c3jqBCx3mYcBC5EEa7njqZ8SbruzaGz6QYbAnOCoahJRg==",
-            "groupId": "org.jetbrains.kotlin",
-            "artifactId": "kotlin-stdlib-wasm-js",
-            "version": "2.4.0",
-            "urls": [
-              "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib-wasm-js/2.4.0/kotlin-stdlib-wasm-js-2.4.0.klib"
-            ]
-          },
+          "klibs": [
+            {
+              "role": "main",
+              "artifact": {
+                "integrity": "sha512-J9Vz6SLs71t58T0sdbSerBvL4YYCmmk7Y4vJdQZ47c3jqBCx3mYcBC5EEa7njqZ8SbruzaGz6QYbAnOCoahJRg==",
+                "groupId": "org.jetbrains.kotlin",
+                "artifactId": "kotlin-stdlib-wasm-js",
+                "version": "2.4.0",
+                "urls": [
+                  "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib-wasm-js/2.4.0/kotlin-stdlib-wasm-js-2.4.0.klib"
+                ]
+              }
+            }
+          ],
           "sourceJar": {
             "integrity": "sha512-Y359hJFYRzzWaabyRzDNfZxzl3dUn9eGxvdyMM9uDUaz3NfDdlW9xNnxSPmRY8GkDlxQH7l2OXy3rLmewmna6g==",
             "groupId": "org.jetbrains.kotlin",

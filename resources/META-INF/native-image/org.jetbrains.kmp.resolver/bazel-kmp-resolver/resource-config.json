@@ -5,6 +5,9 @@
         "pattern": "logback\\.xml"
       },
       {
+        "pattern": "META-INF/bazel-kmp-resolver\\.properties"
+      },
+      {
         "pattern": "META-INF/services/.*"
       },
       {

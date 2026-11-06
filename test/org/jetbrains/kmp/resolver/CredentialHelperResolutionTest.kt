@@ -26,7 +26,6 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.runBlocking
-import org.jetbrains.amper.dependency.resolution.ResolutionPlatform
 import org.jetbrains.kmp.resolver.auth.CredentialHelperOption
 import org.jetbrains.kmp.resolver.auth.CredentialHelperProvider
 import org.jetbrains.kmp.resolver.auth.RequestCredentials
@@ -131,7 +130,7 @@ class CredentialHelperResolutionTest {
             cachePath = directory.resolve("cache"),
             repositories = listOf(server.urlOf("/")),
             substitutions = emptyMap(),
-            platforms = setOf(ResolutionPlatform.JVM),
+            platforms = setOf(ManifestPlatform.Jvm),
             credentials = credentials,
         ) { resolver ->
             resolver.resolve(listOf("com.example:hello:1.0"))

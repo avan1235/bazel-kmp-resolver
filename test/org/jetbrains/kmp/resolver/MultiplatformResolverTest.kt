@@ -10,7 +10,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
-import org.jetbrains.amper.dependency.resolution.ResolutionPlatform
 import org.junit.jupiter.api.assertDoesNotThrow
 
 // TODO: would be nice to mock Maven repositories to avoid real HTTP calls
@@ -44,12 +43,13 @@ class MultiplatformResolverTest {
                 "io.ktor:ktor-client-core:3.4.3",
                 "org.jetbrains.kotlin:kotlin-reflect:2.4.0",
             )
+        val platforms = setOf(ManifestPlatform.WASM_JS)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
                 substitutions = emptyMap(),
-                platforms = setOf(ResolutionPlatform.WASM_JS),
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -58,6 +58,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
             libraries = actual,
             manifestResourceFilepath = "manifest-ktor_resolution.json",
         )
@@ -73,12 +75,13 @@ class MultiplatformResolverTest {
             listOf(
                 "org.jetbrains.kotlin:kotlin-reflect:2.4.0",
             )
+        val platforms = setOf(ManifestPlatform.WASM_JS)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
                 substitutions = emptyMap(),
-                platforms = setOf(ResolutionPlatform.WASM_JS),
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -87,9 +90,27 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
             libraries = actual,
             manifestResourceFilepath = "manifest-no_jvm.json",
         )
+    }
+
+    @Test
+    fun `JVM-only library requested for a native platform has no variant`(): Unit = runBlocking {
+        val actual =
+            testMultiplatformResolver(
+                cachePath = createTempDirectory("resolution-cache"),
+                repositories = listOf("https://repo1.maven.org/maven2"),
+                substitutions = emptyMap(),
+                platforms = setOf(ManifestPlatform.Klib(KlibPlatform.IOS_ARM64)),
+                credentials = noCredentials,
+            ) { resolver ->
+                resolver.resolve(listOf("org.jetbrains.kotlin:kotlin-reflect:2.4.0"))
+            }
+
+        assertEquals(emptyList(), actual)
     }
 
     @Test
@@ -102,22 +123,24 @@ class MultiplatformResolverTest {
             listOf(
                 "io.ktor:ktor-client-core:3.4.3",
             )
+        val substitutions =
+            mapOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
+                    MultiplatformLibraryId.fromString(
+                        "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
+                    ),
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core-wasm-js" to
+                    MultiplatformLibraryId.fromString(
+                        "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core-wasm-js:1.10.2-intellij-1",
+                    ),
+            )
+        val platforms = setOf(ManifestPlatform.WASM_JS)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
-                substitutions =
-                    mapOf(
-                        "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
-                            MultiplatformLibraryId.fromString(
-                                "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
-                            ),
-                        "org.jetbrains.kotlinx:kotlinx-coroutines-core-wasm-js" to
-                            MultiplatformLibraryId.fromString(
-                                "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core-wasm-js:1.10.2-intellij-1",
-                            ),
-                    ),
-                platforms = setOf(ResolutionPlatform.WASM_JS),
+                substitutions = substitutions,
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -126,6 +149,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = substitutions,
             libraries = actual,
             manifestResourceFilepath = "manifest-with_substitutions.json",
         )
@@ -143,12 +168,13 @@ class MultiplatformResolverTest {
                 "org.jetbrains.kotlin:kotlin-reflect:2.4.0", // JVM-only library, its id is its
                 // variantId
             )
+        val platforms = setOf(ManifestPlatform.Jvm)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
                 substitutions = emptyMap(),
-                platforms = setOf(ResolutionPlatform.JVM),
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -157,6 +183,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
             libraries = actual,
             manifestResourceFilepath = "manifest-jvm_resolution.json",
         )
@@ -173,14 +201,14 @@ class MultiplatformResolverTest {
                 "io.ktor:ktor-client-core:3.4.3", // depends on the wasmJs-only `kotlinx-browser`,
                 // skipped on JVM
             )
+        // reversed on purpose: the manifest must not depend on the order platforms are requested in
+        val platforms = setOf(ManifestPlatform.Jvm, ManifestPlatform.WASM_JS)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
                 substitutions = emptyMap(),
-                // reversed on purpose: the manifest must not depend on the order platforms are
-                // requested in
-                platforms = setOf(ResolutionPlatform.JVM, ResolutionPlatform.WASM_JS),
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -189,8 +217,182 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
             libraries = actual,
             manifestResourceFilepath = "manifest-wasmjs_jvm.json",
+        )
+    }
+
+    @Test
+    fun `native resolution`() = runBlocking {
+        val repositories =
+            listOf(
+                "https://repo1.maven.org/maven2",
+            )
+        val coordinates =
+            listOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2", // `kotlin-stdlib` ships
+                // with
+                // the Kotlin/Native distribution, it is in neither native graph
+            )
+        val platforms =
+            setOf(
+                ManifestPlatform.Klib(KlibPlatform.LINUX_X64),
+                ManifestPlatform.Klib(KlibPlatform.IOS_ARM64),
+            )
+        val actual =
+            testMultiplatformResolver(
+                cachePath = createTempDirectory("resolution-cache"),
+                repositories = repositories,
+                substitutions = emptyMap(),
+                platforms = platforms,
+                credentials = noCredentials,
+            ) { resolver ->
+                resolver.resolve(coordinates)
+            }
+
+        assertUsingManifest(
+            coordinates = coordinates,
+            repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
+            libraries = actual,
+            manifestResourceFilepath = "manifest-native_linux_x64.json",
+        )
+    }
+
+    @Test
+    fun `native resolution of a library binding a C library`() = runBlocking {
+        val repositories =
+            listOf(
+                "https://repo1.maven.org/maven2",
+            )
+        val coordinates =
+            listOf(
+                "io.ktor:ktor-client-curl:3.4.3", // its klib comes with a `libcurl` cinterop klib
+            )
+        val platforms = setOf(ManifestPlatform.Klib(KlibPlatform.LINUX_X64))
+        val actual =
+            testMultiplatformResolver(
+                cachePath = createTempDirectory("resolution-cache"),
+                repositories = repositories,
+                substitutions = emptyMap(),
+                platforms = platforms,
+                credentials = noCredentials,
+            ) { resolver ->
+                resolver.resolve(coordinates)
+            }
+
+        assertUsingManifest(
+            coordinates = coordinates,
+            repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
+            libraries = actual,
+            manifestResourceFilepath = "manifest-native_cinterop_curl.json",
+        )
+    }
+
+    @Test
+    fun `android resolution`() = runBlocking {
+        val repositories =
+            listOf(
+                "https://repo1.maven.org/maven2",
+                "https://dl.google.com/dl/android/maven2",
+            )
+        val coordinates =
+            listOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2", // a jar
+                "androidx.annotation:annotation:1.9.1", // a KMP library without Android variant,
+                // falling back to its JVM variant
+                "androidx.annotation:annotation-experimental:1.4.1", // an aar
+            )
+        val platforms = setOf(ManifestPlatform.Android)
+        val actual =
+            testMultiplatformResolver(
+                cachePath = createTempDirectory("resolution-cache"),
+                repositories = repositories,
+                substitutions = emptyMap(),
+                platforms = platforms,
+                credentials = noCredentials,
+            ) { resolver ->
+                resolver.resolve(coordinates)
+            }
+
+        assertUsingManifest(
+            coordinates = coordinates,
+            repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
+            libraries = actual,
+            manifestResourceFilepath = "manifest-android.json",
+        )
+    }
+
+    @Test
+    fun `android and jvm resolution`() = runBlocking {
+        val repositories =
+            listOf(
+                "https://repo1.maven.org/maven2",
+            )
+        val coordinates =
+            listOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2",
+            )
+        val platforms = setOf(ManifestPlatform.Jvm, ManifestPlatform.Android)
+        val actual =
+            testMultiplatformResolver(
+                cachePath = createTempDirectory("resolution-cache"),
+                repositories = repositories,
+                substitutions = emptyMap(),
+                platforms = platforms,
+                credentials = noCredentials,
+            ) { resolver ->
+                resolver.resolve(coordinates)
+            }
+
+        assertUsingManifest(
+            coordinates = coordinates,
+            repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
+            libraries = actual,
+            manifestResourceFilepath = "manifest-android_jvm.json",
+        )
+    }
+
+    @Test
+    fun `all platforms resolution`() = runBlocking {
+        val repositories =
+            listOf(
+                "https://repo1.maven.org/maven2",
+            )
+        val coordinates =
+            listOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2",
+            )
+        // reversed on purpose: variants are listed in the order of SUPPORTED_PLATFORMS whatever
+        // the order platforms are requested in
+        val platforms = SUPPORTED_PLATFORMS.reversed().toSet()
+        val actual =
+            testMultiplatformResolver(
+                cachePath = createTempDirectory("resolution-cache"),
+                repositories = repositories,
+                substitutions = emptyMap(),
+                platforms = platforms,
+                credentials = noCredentials,
+            ) { resolver ->
+                resolver.resolve(coordinates)
+            }
+
+        assertUsingManifest(
+            coordinates = coordinates,
+            repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
+            libraries = actual,
+            manifestResourceFilepath = "manifest-all_platforms.json",
         )
     }
 
@@ -204,19 +406,21 @@ class MultiplatformResolverTest {
             listOf(
                 "io.ktor:ktor-client-core:3.4.3",
             )
+        val substitutions =
+            mapOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
+                    MultiplatformLibraryId.fromString(
+                        "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
+                    ),
+                // substituting the KMP library covers its platform-specific variants
+            )
+        val platforms = setOf(ManifestPlatform.WASM_JS, ManifestPlatform.Jvm)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
-                substitutions =
-                    mapOf(
-                        "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
-                            MultiplatformLibraryId.fromString(
-                                "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
-                            ),
-                        // substituting the KMP library covers its platform-specific variants
-                    ),
-                platforms = setOf(ResolutionPlatform.WASM_JS, ResolutionPlatform.JVM),
+                substitutions = substitutions,
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -225,6 +429,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = substitutions,
             libraries = actual,
             manifestResourceFilepath = "manifest-with_substitutions_jvm.json",
         )
@@ -241,22 +447,24 @@ class MultiplatformResolverTest {
                 "io.ktor:ktor-client-core:3.4.3", // depends on `kotlinx-coroutines-slf4j` on JVM, a
                 // JVM-only library without KMP parent
             )
+        val substitutions =
+            mapOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
+                    MultiplatformLibraryId.fromString(
+                        "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
+                    ),
+                "org.jetbrains.kotlinx:kotlinx-coroutines-slf4j" to
+                    MultiplatformLibraryId.fromString(
+                        "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-slf4j:1.10.2-intellij-1",
+                    ),
+            )
+        val platforms = setOf(ManifestPlatform.WASM_JS, ManifestPlatform.Jvm)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
-                substitutions =
-                    mapOf(
-                        "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
-                            MultiplatformLibraryId.fromString(
-                                "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
-                            ),
-                        "org.jetbrains.kotlinx:kotlinx-coroutines-slf4j" to
-                            MultiplatformLibraryId.fromString(
-                                "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-slf4j:1.10.2-intellij-1",
-                            ),
-                    ),
-                platforms = setOf(ResolutionPlatform.WASM_JS, ResolutionPlatform.JVM),
+                substitutions = substitutions,
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -265,6 +473,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = substitutions,
             libraries = actual,
             manifestResourceFilepath = "manifest-substituted_without_kmp_parent.json",
         )
@@ -282,23 +492,25 @@ class MultiplatformResolverTest {
                 // substituted below
                 "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1", // the substitute itself
             )
+        val substitutions =
+            mapOf(
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
+                    MultiplatformLibraryId.fromString(
+                        "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
+                    ),
+                "org.jetbrains.kotlinx:kotlinx-coroutines-core-wasm-js" to
+                    MultiplatformLibraryId.fromString(
+                        "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core-wasm-js:1.10.2-intellij-1",
+                    ),
+                // a redundant variant key, as some generators emit: harmless
+            )
+        val platforms = setOf(ManifestPlatform.WASM_JS, ManifestPlatform.Jvm)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
-                substitutions =
-                    mapOf(
-                        "org.jetbrains.kotlinx:kotlinx-coroutines-core" to
-                            MultiplatformLibraryId.fromString(
-                                "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
-                            ),
-                        "org.jetbrains.kotlinx:kotlinx-coroutines-core-wasm-js" to
-                            MultiplatformLibraryId.fromString(
-                                "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core-wasm-js:1.10.2-intellij-1",
-                            ),
-                        // a redundant variant key, as some generators emit: harmless
-                    ),
-                platforms = setOf(ResolutionPlatform.WASM_JS, ResolutionPlatform.JVM),
+                substitutions = substitutions,
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -307,6 +519,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = substitutions,
             libraries = actual,
             manifestResourceFilepath = "manifest-with_substitutions_and_substitute.json",
         )
@@ -327,12 +541,13 @@ class MultiplatformResolverTest {
                 "com.google.devtools.ksp:symbol-processing-aa-embeddable:2.3.6",
                 "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1",
             )
+        val platforms = setOf(ManifestPlatform.Jvm)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
                 substitutions = emptyMap(),
-                platforms = setOf(ResolutionPlatform.JVM),
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -341,6 +556,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
             libraries = actual,
             manifestResourceFilepath = "manifest-variant_requested_directly.json",
         )
@@ -357,12 +574,13 @@ class MultiplatformResolverTest {
             listOf(
                 "ai.jetbrains.code.files:code-files-model:1.0.0-beta.167",
             )
+        val platforms = setOf(ManifestPlatform.WASM_JS)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
                 substitutions = emptyMap(),
-                platforms = setOf(ResolutionPlatform.WASM_JS),
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -371,6 +589,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
             libraries = actual,
             manifestResourceFilepath = "manifest-no_jvm_deps.json",
         )
@@ -387,12 +607,13 @@ class MultiplatformResolverTest {
                 "org.jetbrains.kotlinx:kotlinx-datetime:0.7.1", // its klib embeds a package.json
                 // requiring `@js-joda/core`
             )
+        val platforms = setOf(ManifestPlatform.WASM_JS)
         val actual =
             testMultiplatformResolver(
                 cachePath = createTempDirectory("resolution-cache"),
                 repositories = repositories,
                 substitutions = emptyMap(),
-                platforms = setOf(ResolutionPlatform.WASM_JS),
+                platforms = platforms,
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)
@@ -401,6 +622,8 @@ class MultiplatformResolverTest {
         assertUsingManifest(
             coordinates = coordinates,
             repositories = repositories,
+            platforms = platforms,
+            substitutions = emptyMap(),
             libraries = actual,
             manifestResourceFilepath = "manifest-npm_datetime.json",
         )
@@ -425,7 +648,7 @@ class MultiplatformResolverTest {
             cachePath = cache,
             repositories = repositories,
             substitutions = emptyMap(),
-            platforms = setOf(ResolutionPlatform.WASM_JS),
+            platforms = setOf(ManifestPlatform.WASM_JS),
             credentials = noCredentials,
         ) { resolver ->
             assertDoesNotThrow {
@@ -451,7 +674,7 @@ class MultiplatformResolverTest {
                 cachePath = cache,
                 repositories = repositories,
                 substitutions = emptyMap(),
-                platforms = setOf(ResolutionPlatform.WASM_JS, ResolutionPlatform.JVM),
+                platforms = setOf(ManifestPlatform.WASM_JS, ManifestPlatform.Jvm),
                 credentials = noCredentials,
             ) { resolver ->
                 resolver.resolve(coordinates)

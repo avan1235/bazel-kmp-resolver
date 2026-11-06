@@ -1,4 +1,10 @@
 {
+  "schemaVersion": 2,
+  "resolverVersion": "dev",
+  "inputsHash": "850cf5045bc6e42efc0ac2ae2492f5fcb679b99320a4a6a0d8c35e95c33e543e",
+  "askedPlatforms": [
+    "jvm"
+  ],
   "askedCoordinates": [
     "com.google.devtools.ksp:symbol-processing-aa-embeddable:2.3.6",
     "org.jetbrains.intellij.deps.kotlinx:kotlinx-coroutines-core:1.10.2-intellij-1"
@@ -6,6 +12,7 @@
   "askedRepositories": [
     "https://repo1.maven.org/maven2"
   ],
+  "askedSubstitutions": [],
   "libraries": {
     "com.google.devtools.ksp:symbol-processing-aa-embeddable:2.3.6": {
       "id": "com.google.devtools.ksp:symbol-processing-aa-embeddable:2.3.6",

@@ -27,3 +27,6 @@ replay_pid*
 .kotlin/
 build/
 .idea/
+
+# version of the resolver, written by the release builds only (see .github/workflows/build.yml)
+resources/META-INF/bazel-kmp-resolver.properties

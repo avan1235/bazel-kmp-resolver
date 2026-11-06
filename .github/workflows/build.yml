@@ -6,6 +6,12 @@ on:
       - main
   pull_request:
   workflow_call:
+    inputs:
+      version:
+        description: Release version embedded in the native binaries, `dev` when empty
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -85,17 +91,36 @@ jobs:
           path: ${{ runner.temp }}/graalvm-native-image-cache/downloads
           key: graalvm-native-image-${{ hashFiles('module.yaml') }}
           enableCrossOsArchive: true
+      - name: Record release version
+        if: ${{ inputs.version }}
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: printf 'version=%s\n' "$VERSION" > resources/META-INF/bazel-kmp-resolver.properties
       - name: Build native image
         env:
           BAZEL_KMP_RESOLVER_CACHE_DIR: ${{ runner.temp }}/graalvm-native-image-cache
         shell: bash
         run: ./kotlin do buildNativeImage
       - name: Smoke-test native binary
+        env:
+          VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           binary="build/native-image/bazel-kmp-resolver-${{ matrix.platform }}${{ matrix.executable_extension }}"
           test -f "$binary"
           "$binary" --help >/dev/null
+          "$binary" --version | grep -F "${VERSION:-dev}"
+          inputs=(
+            --coordinate=org.jetbrains.kotlinx:atomicfu:0.26.1
+            --repository=https://repo1.maven.org/maven2
+            --platform=linux_x64
+          )
+          "$binary" generate-bazel-manifest "${inputs[@]}" \
+            --cache-dir=build/smoke-test/cache \
+            --output-manifest-file=build/smoke-test/manifest.json
+          grep -F '"platform":"linux_x64"' build/smoke-test/manifest.json
+          "$binary" check-bazel-manifest "${inputs[@]}" --manifest-file=build/smoke-test/manifest.json
       - name: Upload native binary artifact
         uses: actions/upload-artifact@v7
         with:

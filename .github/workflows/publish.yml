@@ -84,6 +84,8 @@ jobs:
   build-native-images:
     needs: prepare-release
     uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.prepare-release.outputs.tag_name }}
 
   publish:
     needs:

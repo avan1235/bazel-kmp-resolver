@@ -1,8 +1,10 @@
 package org.jetbrains.kmp.resolver
 
 import com.github.ajalt.clikt.command.SuspendingCliktCommand
+import com.github.ajalt.clikt.core.Context
+import com.github.ajalt.clikt.core.UsageError
+import com.github.ajalt.clikt.parameters.groups.provideDelegate
 import com.github.ajalt.clikt.parameters.options.*
-import com.github.ajalt.clikt.parameters.types.choice
 import com.github.ajalt.clikt.parameters.types.int
 import com.github.ajalt.clikt.parameters.types.long
 import java.nio.file.Path
@@ -13,11 +15,9 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.encodeToStream
 import org.jetbrains.amper.dependency.resolution.MavenRepository
-import org.jetbrains.amper.dependency.resolution.ResolutionPlatform
 import org.jetbrains.kmp.resolver.auth.BasicRepositoryCredentials
 import org.jetbrains.kmp.resolver.auth.CredentialHelperOption
 import org.jetbrains.kmp.resolver.auth.CredentialHelperProvider
@@ -32,40 +32,7 @@ import org.jetbrains.kmp.resolver.http.withAuthenticatingHttpClient
  * repositories which exposes the dependencies that have been resolved to a Bazel module.
  */
 class GenerateBazelManifestCommand : SuspendingCliktCommand("generate-bazel-manifest") {
-    private val coordinates by
-        option(
-                "--coordinate",
-                help =
-                    "Maven coordinate to resolve, can be specified multiple times for resolving many coordinates at once.",
-            )
-            .multiple(required = true)
-
-    private val platforms: Set<ResolutionPlatform> by
-        option(
-                "--platform",
-                help =
-                    "Platform to resolve the coordinates for, can be specified multiple times to resolve many platforms at once. " +
-                        "`wasmjs` produces the klib variants of KMP libraries, `jvm` their jar variants along with JVM-only libraries.",
-            )
-            .choice(
-                "wasmjs" to ResolutionPlatform.WASM_JS,
-                "jvm" to ResolutionPlatform.JVM,
-            )
-            .multiple(required = true)
-            .unique()
-
-    private val substitutions: List<Pair<SubstitutionId, MultiplatformLibraryId>> by
-        option(
-                "--substitution",
-                help =
-                    "`group:artifact=group:artifact:version` substituting a library by another one, resolved in its place with its own " +
-                        "artifacts and dependencies; substituting a KMP library covers its platform-specific variants. Can be specified multiple times.",
-            )
-            .convert {
-                val (original, sub) = it.split("=", limit = 2)
-                original to MultiplatformLibraryId.fromString(sub)
-            }
-            .multiple(required = false)
+    private val inputs by ResolutionInputsOptions()
 
     private val outputManifest by
         option(
@@ -74,14 +41,6 @@ class GenerateBazelManifestCommand : SuspendingCliktCommand("generate-bazel-mani
             )
             .convert { Path.of(it) }
             .required()
-
-    private val repositories by
-        option(
-                "--repository",
-                help =
-                    "Maven repository URL, can be specified multiple times for resolving against many repositories.",
-            )
-            .multiple(required = true)
 
     private val repositoryCredentialsFile: Path? by
         option(
@@ -108,42 +67,21 @@ class GenerateBazelManifestCommand : SuspendingCliktCommand("generate-bazel-mani
             .convert { Path.of(it) }
             .required()
 
-    private val nodeExecutable: Path by
+    private val nodeExecutable: Path? by
         option(
                 "--node-executable",
                 help =
-                    "Path to the Node.js executable used to run npm when resolving klib-declared NPM dependencies.",
+                    "Path to the Node.js executable used to run npm when resolving klib-declared NPM dependencies, required with --platform=wasmjs.",
             )
             .convert { Path.of(it) }
-            .required()
 
-    private val npmCliJs: Path by
+    private val npmCliJs: Path? by
         option(
                 "--npm-cli-js",
                 help =
-                    "Path to npm's `npm-cli.js` entry point, run with the Node.js executable (portable, unlike the `npm` wrapper scripts).",
+                    "Path to npm's `npm-cli.js` entry point, run with the Node.js executable (portable, unlike the `npm` wrapper scripts), required with --platform=wasmjs.",
             )
             .convert { Path.of(it) }
-            .required()
-
-    private val npmRegistry: String? by
-        option(
-            "--npm-registry",
-            help =
-                "NPM registry URL used to resolve klib-declared NPM dependencies. Defaults to https://registry.npmjs.org.",
-        )
-
-    private val npmPackageVersions: List<Pair<String, String>> by
-        option(
-                "--npm-package-version",
-                help =
-                    "Hardcoded `name=version` of an NPM package, resolving version conflicts between klibs manually, can be specified multiple times.",
-            )
-            .convert {
-                val (name, version) = it.split("=", limit = 2)
-                name to version
-            }
-            .multiple(required = false)
 
     private val allowedConcurrentConnections: Int by
         option(
@@ -208,8 +146,34 @@ class GenerateBazelManifestCommand : SuspendingCliktCommand("generate-bazel-mani
             .long()
             .default(30.minutes.inWholeMilliseconds)
 
+    override fun help(context: Context): String =
+        "Resolves Maven coordinates for the given platforms into a manifest from which Bazel generates the targets of the resolved libraries."
+
     @OptIn(ExperimentalSerializationApi::class)
     override suspend fun run() {
+        val manifestInputs = inputs.manifestInputs()
+        // NPM dependencies are only declared by wasmJs klibs: Node.js is only needed to resolve
+        // them
+        val npmResolver =
+            when {
+                ManifestPlatform.WASM_JS !in inputs.platforms -> null
+                else ->
+                    NpmResolver(
+                        nodeExecutable =
+                            nodeExecutable
+                                ?: throw UsageError(
+                                    "--node-executable is required to resolve the NPM dependencies of the wasmjs platform",
+                                ),
+                        npmCliJs =
+                            npmCliJs
+                                ?: throw UsageError(
+                                    "--npm-cli-js is required to resolve the NPM dependencies of the wasmjs platform",
+                                ),
+                        registryUrl = inputs.npmRegistry,
+                        packageVersionOverrides = inputs.npmPackageVersions.toMap(),
+                        workDir = outputManifest.toAbsolutePath().parent,
+                    )
+            }
         val repositoryCredentials =
             when (val credentialsFile = repositoryCredentialsFile) {
                 null -> emptyList()
@@ -244,24 +208,17 @@ class GenerateBazelManifestCommand : SuspendingCliktCommand("generate-bazel-mani
                     val resolver =
                         MultiplatformResolver(
                             cachePath = cacheDir,
-                            platforms = platforms,
-                            repositories = repositories.map { MavenRepository(it) },
+                            platforms = inputs.platforms,
+                            repositories = inputs.repositories.map { MavenRepository(it) },
                             httpClient = httpClient,
                             artifactResolver = artifactResolver,
-                            substitutions = substitutions.toMap(),
-                            npmResolver =
-                                NpmResolver(
-                                    nodeExecutable = nodeExecutable,
-                                    npmCliJs = npmCliJs,
-                                    registryUrl = npmRegistry,
-                                    packageVersionOverrides = npmPackageVersions.toMap(),
-                                    workDir = outputManifest.parent,
-                                ),
+                            substitutions = inputs.substitutions.toMap(),
+                            npmResolver = npmResolver,
                         )
-                    BazelManifest(
-                        askedCoordinates = coordinates.sorted(),
-                        askedRepositories = repositories.sorted(),
-                        libraries = resolver.resolve(coordinates).asLibraries(),
+                    BazelManifest.of(
+                        inputs = manifestInputs,
+                        resolverVersion = resolverVersion,
+                        variants = resolver.resolve(inputs.coordinates),
                     )
                 }
             }
@@ -275,22 +232,3 @@ class GenerateBazelManifestCommand : SuspendingCliktCommand("generate-bazel-mani
         }
     }
 }
-
-internal fun List<MultiplatformVariant>.asLibraries():
-    Map<MultiplatformLibraryId, MultiplatformLibrary> = groupBy {
-    it.id
-}
-    .mapValues { (id, variants) ->
-        MultiplatformLibrary(
-            id = id,
-            variants = variants,
-        )
-    }
-    .toSortedMap()
-
-@Serializable
-internal data class BazelManifest(
-    val askedCoordinates: List<String>,
-    val askedRepositories: List<String>,
-    val libraries: Map<MultiplatformLibraryId, MultiplatformLibrary>,
-)
