@@ -41,8 +41,8 @@ needs no mapping table.
 | `linux_arm64`         | `klib` variants of the konan target       |
 | `linux_x64`           | `klib` variants of the konan target       |
 | `macos_arm64`         | `klib` variants of the konan target       |
-| `android`             | `android` variants, packaged `aar` or `jar` |
-| `jvm`                 | `jvm` variants                            |
+| `android`             | `android` variants, packaged `aar` or `jar`, and `redirect` variants of platform `android` |
+| `jvm`                 | `jvm` variants, and `redirect` variants of platform `jvm` |
 
 The **resolution inputs** of a manifest are `--coordinate`, `--platform`, `--repository`, `--substitution`,
 `--npm-registry` and `--npm-package-version`: they are digested into its `inputsHash`, and `check-bazel-manifest`
@@ -152,8 +152,11 @@ or `kotlin-stdlib`, which publishes its JVM jar in its umbrella module.
 `variants` lists at most one variant per platform, in **platform order**: the klib platforms first (`wasm_js`,
 `ios_arm64`, `ios_simulator_arm64`, `linux_arm64`, `linux_x64`, `macos_arm64`), then `android`, then `jvm`. A library
 has a variant for each requested platform whose dependency graph contains it: `kotlin-stdlib` has no native variant, as
-it ships with the Kotlin/Native distribution, and a JVM-only library has no `klib` variant. Umbrella modules, BOMs and
-POM-only modules have no artifact of their own and are not libraries.
+it ships with the Kotlin/Native distribution, and a JVM-only library has no `klib` variant. An umbrella module whose
+variant of a platform is a module of its own (`available-at`) is the library of that variant; a BOM is not a library.
+A module without artifact for the `android` or `jvm` platform but with dependencies, like an umbrella whose variant of
+the platform only declares dependencies on other libraries, or a POM-only module, is a library with a `redirect`
+variant (see below).
 
 ### Variants
 
@@ -161,7 +164,7 @@ Every variant has these fields:
 
 | Field                  | Content                                                                                                                                 |
 |------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|
-| `type`                 | `klib`, `android` or `jvm`.                                                                                                             |
+| `type`                 | `klib`, `android`, `jvm` or `redirect`.                                                                                                 |
 | `id`                   | ID of its library.                                                                                                                      |
 | `variantId`            | `group:artifact:version` of the Maven module resolved for the platform, like `org.jetbrains.kotlinx:kotlinx-coroutines-core-linuxx64:1.10.2`. |
 | `dependencies`         | Libraries the library needs on the link path or at runtime, but does not expose to its dependents, as `group:artifact`, sorted.          |
@@ -199,6 +202,22 @@ so that the Android branch of an alias never falls back to the JVM one.
 | `jar`       | Maven artifact of the jar of the library.                       |
 | `sourceJar` | Maven artifact of the sources jar, `null` when there is none.   |
 
+#### `redirect`
+
+| Field      | Content                                                                                      |
+|------------|----------------------------------------------------------------------------------------------|
+| `platform` | `android` or `jvm`: the platform the variant stands for its dependencies on.                 |
+
+A `redirect` variant has no artifact: the library publishes its variant of the platform as dependencies on other
+libraries only, which `dependencies` and `exportedDependencies` list as usual. The Android variants of the JetBrains
+Compose libraries (`org.jetbrains.compose.runtime:runtime`, …) are such redirects to the AndroidX Compose libraries
+(`androidx.compose.runtime:runtime`, …), and so is a POM-only library aggregating others. Consumers of the library get
+what it stands for, as the consumers of a Gradle build do. The klibs of a native platform are always published in a
+module of their own, which the umbrella points at (`available-at`), so a klib platform has no `redirect` variant.
+`variantId` is the module itself, which has no files to download. The `redirect` type was added to schema version 2
+after its first manifests, which remain valid: they have no such variant, their resolutions dropped these modules
+along with the edges pointing at them.
+
 ### Maven artifacts
 
 | Field                              | Content                                                                                                                                                                                               |
@@ -233,16 +252,21 @@ For instance, the `inputsHash` of the example above is the digest of:
 
 The targets of a library are named after `<lib>`, its `group:artifact` with every character but letters and digits
 replaced by `_`, like `org_jetbrains_kotlinx_kotlinx_coroutines_core`. Each Maven artifact of the manifest is
-downloaded from its `urls`, checked against its `integrity`. In the dependencies of a target of platform `<p>`, a
-dependency `<d>` (a `group:artifact` of `dependencies` or `exportedDependencies`) is the target of `<d>` for `<p>`.
+downloaded from its `urls`, checked against its `integrity`. The targets of the variants are `<lib>.<platform>`: the
+`.`, which the name of a library never contains, keeps them apart from the alias of a library whose artifact ends in
+`-android` or `-jvm` (`androidx.datastore:datastore-preferences-android` next to
+`androidx.datastore:datastore-preferences`). In the dependencies of a target of platform `<p>`, a dependency `<d>` (a
+`group:artifact` of `dependencies` or `exportedDependencies`) is the target of `<d>` for `<p>`.
 
 | Variant                          | Targets                                                                                                                                                                                                                                                                                                                                         |
 |----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `klib` of konan target `<t>`     | One `kt_klib_import` per klib, all with `konan_target = "<t>"`: `<lib>_<t>_cinterop_<n>` for the `cinterop` klib at position `<n>` (from 0) among the cinterop klibs of the variant, and `<lib>_<t>` for the `main` klib, whose `deps` are its cinterop imports and the `<d>_<t>` of `dependencies`, and whose `exports` are the `<d>_<t>` of `exportedDependencies`. |
-| `klib` of platform `wasm_js`     | The same imports, named `<lib>_wasm_js` and `<lib>_wasm_js_cinterop_<n>`, with the `KtKlibInfo` platform `wasm_js` and no konan target, once rules_kotlin imports Wasm klibs; the `npmPackages` are the NPM dependencies of `<lib>_wasm_js`.                                                                                          |
-| `android` packaged `aar`         | `aar_import` named `<lib>_android` of the `artifact`, with the `sourceJar` as `srcjar`, the `<d>_android` of `dependencies` and `exportedDependencies` as `deps` and the ones of `exportedDependencies` as `exports`.                                                                                                                       |
-| `android` packaged `jar`         | `jvm_import` named `<lib>_android` of the `artifact`, with the same `srcjar`, `deps` and `exports`.                                                                                                                                                                                                                                        |
-| `jvm`                            | `jvm_import` named `<lib>_jvm` of the `jar`, with the `sourceJar` as `srcjar`, the `<d>_jvm` of `dependencies` and `exportedDependencies` as `deps` and the ones of `exportedDependencies` as `exports`.                                                                                                                                   |
+| `klib` of konan target `<t>`     | One `kt_klib_import` per klib, all with `konan_target = "<t>"`: `<lib>.<t>.cinterop_<n>` for the `cinterop` klib at position `<n>` (from 0) among the cinterop klibs of the variant, and `<lib>.<t>` for the `main` klib, whose `deps` are its cinterop imports and the `<d>.<t>` of `dependencies`, and whose `exports` are the `<d>.<t>` of `exportedDependencies`. |
+| `klib` of platform `wasm_js`     | The same imports, named `<lib>.wasm_js` and `<lib>.wasm_js.cinterop_<n>`, with the `KtKlibInfo` platform `wasm_js` and no konan target, once rules_kotlin imports Wasm klibs; the `npmPackages` are the NPM dependencies of `<lib>.wasm_js`.                                                                                          |
+| `android` packaged `aar`         | `aar_import` named `<lib>.android` of the `artifact`, with the `sourceJar` as `srcjar`, the `<d>.android` of `dependencies` and `exportedDependencies` as `deps` and the ones of `exportedDependencies` as `exports`.                                                                                                                       |
+| `android` packaged `jar`         | `jvm_import` named `<lib>.android` of the `artifact`, with the same `srcjar`, `deps` and `exports`.                                                                                                                                                                                                                                        |
+| `jvm`                            | `jvm_import` named `<lib>.jvm` of the `jar`, with the `sourceJar` as `srcjar`, the `<d>.jvm` of `dependencies` and `exportedDependencies` as `deps` and the ones of `exportedDependencies` as `exports`.                                                                                                                                   |
+| `redirect` of platform `android` | `android_library` named `<lib>.android` without sources, whose `exports` are the `<d>.android` of both `dependencies` and `exportedDependencies`, as the rule has no runtime-only dependencies.                                                                                                                                              |
+| `redirect` of platform `jvm`     | `kt_jvm_library` named `<lib>.jvm` without sources, whose `exports` are the `<d>.jvm` of `exportedDependencies` and `runtime_deps` the ones of `dependencies`; a `kt_jvm_library` rather than a `java_library`, so that it forwards the `KtJvmInfo` of its dependencies too.                                                                                                  |
 
 A `kt_klib_import` provides a `KtKlibInfo` whose `platform` is `native` and `konan_target` is the `platform` of the
 variant (`wasm_js` and no konan target for a Wasm klib), whose `transitive_klibs` gathers the imports of its `deps` and
@@ -255,13 +279,13 @@ Each library then gets an alias named `<lib>` selecting its target for the platf
 alias(
     name = "org_jetbrains_kotlinx_kotlinx_coroutines_core",
     actual = select({
-        "@rules_kotlin//kotlin/native/platforms:is_ios_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core_ios_arm64",
-        "@rules_kotlin//kotlin/native/platforms:is_ios_simulator_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core_ios_simulator_arm64",
-        "@rules_kotlin//kotlin/native/platforms:is_linux_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core_linux_arm64",
-        "@rules_kotlin//kotlin/native/platforms:is_linux_x64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core_linux_x64",
-        "@rules_kotlin//kotlin/native/platforms:is_macos_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core_macos_arm64",
-        "@platforms//os:android": ":org_jetbrains_kotlinx_kotlinx_coroutines_core_android",
-        "//conditions:default": ":org_jetbrains_kotlinx_kotlinx_coroutines_core_jvm",
+        "@rules_kotlin//kotlin/native/platforms:is_ios_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core.ios_arm64",
+        "@rules_kotlin//kotlin/native/platforms:is_ios_simulator_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core.ios_simulator_arm64",
+        "@rules_kotlin//kotlin/native/platforms:is_linux_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core.linux_arm64",
+        "@rules_kotlin//kotlin/native/platforms:is_linux_x64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core.linux_x64",
+        "@rules_kotlin//kotlin/native/platforms:is_macos_arm64": ":org_jetbrains_kotlinx_kotlinx_coroutines_core.macos_arm64",
+        "@platforms//os:android": ":org_jetbrains_kotlinx_kotlinx_coroutines_core.android",
+        "//conditions:default": ":org_jetbrains_kotlinx_kotlinx_coroutines_core.jvm",
     }),
 )
 ```

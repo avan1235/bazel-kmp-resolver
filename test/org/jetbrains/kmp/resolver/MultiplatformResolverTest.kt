@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.assertDoesNotThrow
 
 // TODO: would be nice to mock Maven repositories to avoid real HTTP calls
@@ -329,6 +330,188 @@ class MultiplatformResolverTest {
             manifestResourceFilepath = "manifest-android.json",
         )
     }
+
+    @Test
+    fun `a library requested with and without an explicit packaging type is one variant`(): Unit =
+        withLocalMavenRepository { repository ->
+            runBlocking {
+                val coordinates =
+                    listOf(
+                        LOCAL_TYPED_AAR_DEPENDENT_COORDINATES,
+                        LOCAL_UNTYPED_AAR_DEPENDENT_COORDINATES,
+                    )
+                val actual =
+                    testMultiplatformResolver(
+                        cachePath = createTempDirectory("resolution-cache"),
+                        repositories = listOf(repository),
+                        substitutions = emptyMap(),
+                        platforms = setOf(ManifestPlatform.Android),
+                        credentials = noCredentials,
+                    ) { resolver ->
+                        resolver.resolve(coordinates)
+                    }
+
+                val variants = actual.filterIsInstance<MultiplatformVariant.Android>()
+                assertEquals(actual.size, variants.size, "$actual")
+                assertEquals(3, variants.size, "$variants")
+                assertEquals(
+                    setOf(
+                        LOCAL_AAR_COORDINATES,
+                        LOCAL_TYPED_AAR_DEPENDENT_COORDINATES,
+                        LOCAL_UNTYPED_AAR_DEPENDENT_COORDINATES,
+                    ),
+                    variants.map { it.id.gav }.toSet(),
+                )
+                val widget = variants.single { it.id.gav == LOCAL_AAR_COORDINATES }
+                assertEquals(AndroidPackaging.AAR, widget.packaging)
+                assertEquals(
+                    listOf("com/example/widget/1.0/widget-1.0.aar"),
+                    widget.artifact.urls.map { it.removePrefix(repository) },
+                )
+                variants
+                    .filter { it.id.gav != LOCAL_AAR_COORDINATES }
+                    .forEach { user ->
+                        assertEquals(
+                            listOf("com.example:widget"),
+                            user.exportedDependencies,
+                            user.id.gav,
+                        )
+                        assertEquals(emptyList(), user.dependencies, user.id.gav)
+                    }
+            }
+        }
+
+    @Test
+    fun `KMP umbrella requested as AAR uses its Android variant`(): Unit =
+        withLocalMavenRepository { repository ->
+            runBlocking {
+                val actual =
+                    testMultiplatformResolver(
+                        cachePath = createTempDirectory("resolution-cache"),
+                        repositories = listOf(repository),
+                        substitutions = emptyMap(),
+                        platforms = setOf(ManifestPlatform.Android),
+                        credentials = noCredentials,
+                    ) { resolver ->
+                        resolver.resolve(
+                            listOf(LOCAL_KMP_AAR_COORDINATES, LOCAL_KMP_AAR_DEPENDENT_COORDINATES),
+                        )
+                    }
+
+                val variants = actual.filterIsInstance<MultiplatformVariant.Android>()
+                assertEquals(actual.size, variants.size, "$actual")
+                assertEquals(2, variants.size, "$variants")
+                val widget = variants.single { it.id.gav == LOCAL_KMP_AAR_COORDINATES }
+                assertEquals(LOCAL_KMP_AAR_VARIANT_COORDINATES, widget.variantId.gav)
+                assertEquals(AndroidPackaging.AAR, widget.packaging)
+                assertEquals(
+                    listOf("com/example/kmp-widget-android/1.0/kmp-widget-android-1.0.aar"),
+                    widget.artifact.urls.map { it.removePrefix(repository) },
+                )
+                val user = variants.single { it.id.gav == LOCAL_KMP_AAR_DEPENDENT_COORDINATES }
+                assertEquals(listOf("com.example:kmp-widget"), user.exportedDependencies)
+            }
+        }
+
+    @Test
+    fun `KMP library whose Android variant only declares dependencies redirects to them`(): Unit =
+        withLocalMavenRepository { repository ->
+            runBlocking {
+                val actual =
+                    testMultiplatformResolver(
+                        cachePath = createTempDirectory("resolution-cache"),
+                        repositories = listOf(repository),
+                        substitutions = emptyMap(),
+                        platforms = setOf(ManifestPlatform.Android, ManifestPlatform.Jvm),
+                        credentials = noCredentials,
+                    ) { resolver ->
+                        resolver.resolve(listOf(LOCAL_KMP_REDIRECT_COORDINATES))
+                    }
+
+                val libraries = actual.asLibraries().mapKeys { (id, _) -> id.gav }
+                assertEquals(
+                    setOf(
+                        LOCAL_KMP_REDIRECT_COORDINATES,
+                        LOCAL_KMP_AAR_COORDINATES,
+                        LOCAL_LIBRARY_COORDINATES,
+                    ),
+                    libraries.keys,
+                )
+
+                // the Android variant of the library is its dependencies, in the scopes they are
+                // declared with; the JVM one is the jar of its own module, as usual
+                val ui = libraries.getValue(LOCAL_KMP_REDIRECT_COORDINATES).variants
+                assertEquals(listOf("android", "jvm"), ui.map { it.platformName })
+                val redirect = ui.filterIsInstance<MultiplatformVariant.Redirect>().single()
+                assertEquals(RedirectPlatform.ANDROID, redirect.platform)
+                assertEquals(LOCAL_KMP_REDIRECT_COORDINATES, redirect.id.gav)
+                assertEquals(LOCAL_KMP_REDIRECT_COORDINATES, redirect.variantId.gav)
+                assertEquals(listOf("com.example:kmp-widget"), redirect.exportedDependencies)
+                assertEquals(listOf("com.example:hello"), redirect.dependencies)
+                val jvm = ui.filterIsInstance<MultiplatformVariant.Jvm>().single()
+                assertEquals(LOCAL_KMP_REDIRECT_JVM_VARIANT_COORDINATES, jvm.variantId.gav)
+                assertEquals(
+                    listOf("com/example/kmp-ui-jvm/1.0/kmp-ui-jvm-1.0.jar"),
+                    jvm.jar.urls.map { it.removePrefix(repository) },
+                )
+
+                // the libraries the redirect stands for are Android libraries of the manifest
+                val widget =
+                    libraries
+                        .getValue(LOCAL_KMP_AAR_COORDINATES)
+                        .variants
+                        .filterIsInstance<MultiplatformVariant.Android>()
+                        .single()
+                assertEquals(LOCAL_KMP_AAR_VARIANT_COORDINATES, widget.variantId.gav)
+                assertEquals(AndroidPackaging.AAR, widget.packaging)
+                val hello =
+                    libraries
+                        .getValue(LOCAL_LIBRARY_COORDINATES)
+                        .variants
+                        .filterIsInstance<MultiplatformVariant.Android>()
+                        .single()
+                assertEquals(AndroidPackaging.JAR, hello.packaging)
+
+                // the manifest tells the variant apart by its type, with the platform it is for
+                assertEquals(
+                    """{"type":"redirect","platform":"android","id":"com.example:kmp-ui:1.0","variantId":"com.example:kmp-ui:1.0","dependencies":["com.example:hello"],"exportedDependencies":["com.example:kmp-widget"]}""",
+                    Json.encodeToString(MultiplatformVariant.serializer(), redirect),
+                )
+            }
+        }
+
+    @Test
+    fun `POM-only library redirects to its dependencies`(): Unit =
+        withLocalMavenRepository { repository ->
+            runBlocking {
+                val actual =
+                    testMultiplatformResolver(
+                        cachePath = createTempDirectory("resolution-cache"),
+                        repositories = listOf(repository),
+                        substitutions = emptyMap(),
+                        platforms = setOf(ManifestPlatform.Jvm),
+                        credentials = noCredentials,
+                    ) { resolver ->
+                        resolver.resolve(listOf(LOCAL_POM_ONLY_COORDINATES))
+                    }
+
+                assertEquals(
+                    setOf(LOCAL_POM_ONLY_COORDINATES, LOCAL_LIBRARY_COORDINATES),
+                    actual.map { it.id.gav }.toSet(),
+                )
+                val aggregate = actual.filterIsInstance<MultiplatformVariant.Redirect>().single()
+                assertEquals(RedirectPlatform.JVM, aggregate.platform)
+                assertEquals(LOCAL_POM_ONLY_COORDINATES, aggregate.id.gav)
+                assertEquals(listOf("com.example:hello"), aggregate.exportedDependencies)
+                assertEquals(emptyList(), aggregate.dependencies)
+                val hello = actual.filterIsInstance<MultiplatformVariant.Jvm>().single()
+                assertEquals(LOCAL_LIBRARY_COORDINATES, hello.id.gav)
+                assertEquals(
+                    listOf("com/example/hello/1.0/hello-1.0.jar"),
+                    hello.jar.urls.map { it.removePrefix(repository) },
+                )
+            }
+        }
 
     @Test
     fun `android and jvm resolution`() = runBlocking {

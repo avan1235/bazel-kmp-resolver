@@ -152,6 +152,34 @@ internal sealed class MultiplatformVariant {
         val jar: MavenMultiplatformLibraryArtifact,
         val sourceJar: MavenMultiplatformLibraryArtifact?,
     ) : MultiplatformVariant()
+
+    /**
+     * A variant without artifact of its own, standing for its dependencies: the library publishes
+     * its variant of the platform as dependencies on other libraries only, like the Android
+     * variants of the JetBrains Compose libraries, which redirect to the AndroidX Compose ones, or
+     * a POM-only library aggregating others. Its dependents compile against and link
+     * [exportedDependencies], and link [dependencies], as they would with an artifact.
+     */
+    @Serializable
+    @SerialName("redirect")
+    data class Redirect(
+        val platform: RedirectPlatform,
+        override val id: MultiplatformLibraryId,
+        override val variantId: MultiplatformLibraryId,
+        override val dependencies: List<SubstitutionId>,
+        override val exportedDependencies: List<SubstitutionId>,
+    ) : MultiplatformVariant()
+}
+
+/**
+ * Platform of a [MultiplatformVariant.Redirect]. The klibs of a native platform are always
+ * published in a module of their own, which the umbrella module points at (`available-at`), so a
+ * klib platform has no redirect variant.
+ */
+@Serializable
+internal enum class RedirectPlatform(val manifestName: String) {
+    @SerialName("android") ANDROID(ManifestPlatform.Android.cliName),
+    @SerialName("jvm") JVM(ManifestPlatform.Jvm.cliName),
 }
 
 /** Name of the platform of this variant in the manifest. */
@@ -161,6 +189,7 @@ internal val MultiplatformVariant.platformName: String
             is MultiplatformVariant.Klib -> platform.manifestName
             is MultiplatformVariant.Android -> ManifestPlatform.Android.cliName
             is MultiplatformVariant.Jvm -> ManifestPlatform.Jvm.cliName
+            is MultiplatformVariant.Redirect -> platform.manifestName
         }
 
 /** A klib of a [MultiplatformVariant.Klib], with the role it plays in the variant. */
@@ -453,7 +482,8 @@ internal class MultiplatformResolver(
                     }
 
                 is UnresolvedMultiplatformLibrary.Android,
-                is UnresolvedMultiplatformLibrary.Jvm -> null
+                is UnresolvedMultiplatformLibrary.Jvm,
+                is UnresolvedMultiplatformLibrary.Redirect -> null
             }
         }
         return when {
@@ -541,6 +571,7 @@ internal class MultiplatformResolver(
                     }
                 }
                 .toMap()
+        val kmpLibraries: Set<MultiplatformLibraryId> = kmpParents.values.toSet()
         val errorsByNode =
             nodes
                 .map { node ->
@@ -567,7 +598,9 @@ internal class MultiplatformResolver(
         val collectedDependencies =
             nodes
                 .distinctBy { node -> node.dependency }
-                .filter { node -> node.isCollectedFor(platform, kmpParents, requestedModules) }
+                .filter { node ->
+                    node.isCollectedFor(platform, kmpParents, kmpLibraries, requestedModules)
+                }
                 .map { node -> node.dependency }
                 .toSet()
         val (substitutedNodes, filteredNodes) =
@@ -596,10 +629,18 @@ internal class MultiplatformResolver(
         return filteredNodes
             .groupBy { it.gav }
             .map { (_, scopedNodes) ->
-                when (platform) {
-                    is ManifestPlatform.Klib ->
-                        UnresolvedMultiplatformLibrary.Klib(
-                            platform = platform.klibPlatform,
+                when {
+                    scopedNodes.none { node -> node.artifacts().isNotEmpty() } ->
+                        UnresolvedMultiplatformLibrary.Redirect(
+                            platform =
+                                when (platform) {
+                                    ManifestPlatform.Android -> RedirectPlatform.ANDROID
+                                    ManifestPlatform.Jvm -> RedirectPlatform.JVM
+                                    is ManifestPlatform.Klib ->
+                                        error(
+                                            "[${scopedNodes.first().gav.gav}] a klib platform collects no library without artifact",
+                                        )
+                                },
                             resolvedNodes = scopedNodes,
                             substitutions = substitutions,
                             kmpParents = kmpParents,
@@ -607,23 +648,36 @@ internal class MultiplatformResolver(
                             repositories = repositories,
                         )
 
-                    ManifestPlatform.Android ->
-                        UnresolvedMultiplatformLibrary.Android(
-                            resolvedNodes = scopedNodes,
-                            substitutions = substitutions,
-                            kmpParents = kmpParents,
-                            possibleDependencies = possibleDependencies,
-                            repositories = repositories,
-                        )
+                    else ->
+                        when (platform) {
+                            is ManifestPlatform.Klib ->
+                                UnresolvedMultiplatformLibrary.Klib(
+                                    platform = platform.klibPlatform,
+                                    resolvedNodes = scopedNodes,
+                                    substitutions = substitutions,
+                                    kmpParents = kmpParents,
+                                    possibleDependencies = possibleDependencies,
+                                    repositories = repositories,
+                                )
 
-                    ManifestPlatform.Jvm ->
-                        UnresolvedMultiplatformLibrary.Jvm(
-                            resolvedNodes = scopedNodes,
-                            substitutions = substitutions,
-                            kmpParents = kmpParents,
-                            possibleDependencies = possibleDependencies,
-                            repositories = repositories,
-                        )
+                            ManifestPlatform.Android ->
+                                UnresolvedMultiplatformLibrary.Android(
+                                    resolvedNodes = scopedNodes,
+                                    substitutions = substitutions,
+                                    kmpParents = kmpParents,
+                                    possibleDependencies = possibleDependencies,
+                                    repositories = repositories,
+                                )
+
+                            ManifestPlatform.Jvm ->
+                                UnresolvedMultiplatformLibrary.Jvm(
+                                    resolvedNodes = scopedNodes,
+                                    substitutions = substitutions,
+                                    kmpParents = kmpParents,
+                                    possibleDependencies = possibleDependencies,
+                                    repositories = repositories,
+                                )
+                        }
                 }
             }
     }
@@ -700,12 +754,14 @@ internal class MultiplatformResolver(
      * Whether this node of the dependency graph resolved for [platform] is a library to expose in
      * the manifest.
      *
-     * In a single-platform resolution, KMP umbrella libraries, BOMs and pom-only libraries have no
-     * artifact, nor has `kotlin-stdlib` on native platforms, as it ships with the Kotlin/Native
-     * distribution: they are skipped, and the edges pointing at an umbrella library are kept
-     * through the platform-specific variants it is the KMP parent of. The platform-specific variant
-     * of a KMP library (`*-wasm-js`, `*-linuxx64`, `*-jvm`) has artifacts, and so has a JVM-only
-     * library, whose artifacts tell whether it is a library of the platform.
+     * In a single-platform resolution, a KMP umbrella library publishing its variant of the
+     * platform in a module of its own (`available-at`) is the KMP parent of that variant
+     * ([kmpLibraries]): it is skipped, whether it has no artifact or appears to have one because it
+     * was requested with an explicit packaging type, and the edges pointing at it are kept through
+     * its variant. The platform-specific variant of a KMP library (`*-wasm-js`, `*-linuxx64`,
+     * `*-jvm`) has artifacts, and so has a JVM-only library, whose artifacts tell whether it is a
+     * library of the platform. A node without artifact is collected as a redirect, or skipped, as
+     * [isCollectedAsRedirectFor] tells.
      *
      * A klib platform collects the variants of KMP libraries, along with the libraries requested
      * directly ([requestedModules]), such as a platform-specific variant asked for itself.
@@ -713,20 +769,20 @@ internal class MultiplatformResolver(
     private fun MavenDependencyNode.isCollectedFor(
         platform: ManifestPlatform,
         kmpParents: KmpParents,
+        kmpLibraries: Set<MultiplatformLibraryId>,
         requestedModules: Set<SubstitutionId>,
     ): Boolean {
-        val artifacts =
-            (dependency as MavenDependencyImpl).files(withSources = true).filterNot {
-                it.isDocumentation
-            }
+        val artifacts = artifacts()
         val module = gav.toSubstitutionId()
         return when {
-            artifacts.isEmpty() -> {
+            gav in kmpLibraries -> {
                 logger.debug(
-                    "[${gav.gav}] skipping ${platform.cliName} platform, it has no artifact: a KMP library, a BOM, a POM-only library, or a library shipped with the Kotlin/Native distribution",
+                    "[${gav.gav}] skipping ${platform.cliName} platform, it is a KMP library whose variant of the platform is collected in its place",
                 )
                 false
             }
+
+            artifacts.isEmpty() -> isCollectedAsRedirectFor(platform)
 
             else ->
                 when (platform) {
@@ -775,6 +831,53 @@ internal class MultiplatformResolver(
         }
     }
 
+    /**
+     * Whether this node without artifact for [platform] is collected as a
+     * [MultiplatformVariant.Redirect]. The other nodes without artifact are skipped: a BOM, whose
+     * dependencies are constraints, a library without dependencies for the platform, like a KMP
+     * library publishing no variant of it, and any node of a klib platform, where a KMP library
+     * publishes its klibs in a module of its own (`available-at`) and `kotlin-stdlib` ships with
+     * the Kotlin/Native distribution.
+     */
+    private fun MavenDependencyNode.isCollectedAsRedirectFor(platform: ManifestPlatform): Boolean {
+        val dependencies = children.filterIsInstance<MavenDependencyNode>()
+        return when {
+            isBom -> {
+                logger.debug(
+                    "[${gav.gav}] skipping ${platform.cliName} platform, a BOM has no artifact",
+                )
+                false
+            }
+
+            platform is ManifestPlatform.Klib -> {
+                logger.debug(
+                    "[${gav.gav}] skipping ${platform.cliName} platform, it has no artifact: a KMP library, a POM-only library, or a library shipped with the Kotlin/Native distribution",
+                )
+                false
+            }
+
+            dependencies.isEmpty() -> {
+                logger.debug(
+                    "[${gav.gav}] skipping ${platform.cliName} platform, it has neither artifact nor dependency for the platform",
+                )
+                false
+            }
+
+            else -> {
+                logger.debug(
+                    "[${gav.gav}] collected for ${platform.cliName} platform as a redirect, it has no artifact but depends on ${dependencies.map { it.gav.gav }}",
+                )
+                true
+            }
+        }
+    }
+
+    /** Files of this node that are artifacts of the library, i.e. all but its documentation. */
+    private fun MavenDependencyNode.artifacts() =
+        (dependency as MavenDependencyImpl).files(withSources = true).filterNot {
+            it.isDocumentation
+        }
+
     private suspend fun resolveArtifacts(
         nodes: List<UnresolvedMultiplatformLibrary>,
         npmPackagesByVariant: Map<MultiplatformLibraryId, List<NpmMultiplatformLibraryArtifact>>,
@@ -804,6 +907,9 @@ internal class MultiplatformResolver(
                         async {
                             unresolvedNode.resolve(artifactResolver)
                         }
+
+                    is UnresolvedMultiplatformLibrary.Redirect ->
+                        CompletableDeferred(unresolvedNode.resolve())
                 }
             }
             .awaitAll()
@@ -897,6 +1003,29 @@ internal fun <T> classifyKlibs(
         cinteropKlibs.map { klib -> KlibRole.CINTEROP to klib }
 }
 
+/**
+ * The sources of the [variantId] variant among its [sourceJars], the jars ending with `-sources`:
+ * the single one, or the jar of its `sources` classifier, `<artifact>-<version>-sources.jar`, when
+ * it publishes several, like the AndroidX libraries, whose Gradle module metadata also lists the
+ * sources of their samples (`ui-android-1.11.0-beta01-samples-sources.jar`). A variant has at most
+ * one sources jar.
+ */
+internal fun <T> selectSourceJar(
+    variantId: MultiplatformLibraryId,
+    sourceJars: List<T>,
+    fileName: (T) -> String,
+): T? =
+    when {
+        sourceJars.size <= 1 -> sourceJars.singleOrNull()
+        else -> {
+            val sourcesClassifierJar = "${variantId.artifactId}-${variantId.version}-sources.jar"
+            sourceJars.singleOrNull { jar -> fileName(jar) == sourcesClassifierJar }
+                ?: error(
+                    "[${variantId.gav}] variant must have one $sourcesClassifierJar among its source jars, found: ${sourceJars.map(fileName)}",
+                )
+        }
+    }
+
 private data class UnresolvedMultiplatformLibraryArtifact(
     val fileName: String,
     val integrity: MultiplatformLibraryArtifactIntegrity,
@@ -912,6 +1041,13 @@ private data class UnresolvedMultiplatformLibraryArtifact(
  * Several nodes of the graph can request the same library at different versions (common on JVM,
  * where POMs declare all kinds of `kotlin-stdlib` versions), but conflict resolution makes them
  * point at the same dependency, hence the same files and children, so they collapse into one.
+ *
+ * Nodes can also request the same library with and without an explicit packaging type (AndroidX
+ * POMs declare `androidx.core:core` both with `<type>aar</type>` and without), which Amper resolves
+ * as distinct dependencies only differing by that type, with the same children: they collapse too,
+ * into the node declaring the packaging type, as it tells the artifact apart from the one the POM
+ * of the library defaults to. The classifier stays part of the identity, as it names another
+ * artifact.
  */
 private fun List<MavenDependencyNode>.singleNodeOfScope(
     scope: ResolutionScope,
@@ -919,7 +1055,8 @@ private fun List<MavenDependencyNode>.singleNodeOfScope(
     val scopeNodes = filter {
         it.dependency.resolutionConfig.scope == scope
     }
-        .distinctBy { it.dependency }
+        .sortedByDescending { it.dependency.coordinates.packagingType != null }
+        .distinctBy { it.dependency.coordinates.copy(packagingType = null) }
     require(scopeNodes.size <= 1) {
         "UnresolvedMultiplatformLibrary cannot have multiple $scope scope instance, but got $scopeNodes"
     }
@@ -972,13 +1109,9 @@ private sealed class UnresolvedMultiplatformLibrary(
         node.dependency.files(withSources = true).filterIsInstance<DependencyFileImpl>()
     }
 
-    suspend fun sourceJar(): UnresolvedMultiplatformLibraryArtifact? {
-        val sourceJars = files.filter { file -> file.isSourceJar() }
-        require(sourceJars.size <= 1) {
-            "Expected at most one source jar, found ${sourceJars.size}: $sourceJars"
-        }
-        return sourceJars.singleOrNull()?.toUnresolvedMultiplatformLibraryArtifact()
-    }
+    suspend fun sourceJar(): UnresolvedMultiplatformLibraryArtifact? =
+        selectSourceJar(variantId, files.filter { file -> file.isSourceJar() }) { it.fullName }
+            ?.toUnresolvedMultiplatformLibraryArtifact()
 
     val exportedDependencies: Set<SubstitutionId> =
         compileNode?.platformDependencies() ?: emptySet()
@@ -1119,6 +1252,32 @@ private sealed class UnresolvedMultiplatformLibrary(
             return jars.single().toUnresolvedMultiplatformLibraryArtifact()
         }
     }
+
+    /**
+     * A library without artifact for [platform], standing for its dependencies (see
+     * [MultiplatformVariant.Redirect]): it has nothing to download.
+     */
+    class Redirect(
+        val platform: RedirectPlatform,
+        resolvedNodes: List<MavenDependencyNode>,
+        repositories: List<MavenRepository>,
+        substitutions: Substitutions,
+        kmpParents: KmpParents,
+        possibleDependencies: Set<SubstitutionId>,
+    ) :
+        UnresolvedMultiplatformLibrary(
+            resolvedNodes,
+            repositories,
+            substitutions,
+            kmpParents,
+            possibleDependencies,
+        ) {
+        init {
+            require(files.none { file -> !file.isDocumentation }) {
+                "[${variantId.gav}] a redirect must have no artifact, found: ${files.map { it.fullName }}"
+            }
+        }
+    }
 }
 
 private suspend fun UnresolvedMultiplatformLibraryArtifact.resolve(
@@ -1198,6 +1357,15 @@ private suspend fun UnresolvedMultiplatformLibrary.Jvm.resolve(
         exportedDependencies = exportedDependencies.sorted(),
     )
 }
+
+private fun UnresolvedMultiplatformLibrary.Redirect.resolve(): MultiplatformVariant.Redirect =
+    MultiplatformVariant.Redirect(
+        platform = platform,
+        id = id,
+        variantId = variantId,
+        dependencies = dependencies.sorted(),
+        exportedDependencies = exportedDependencies.sorted(),
+    )
 
 private fun String.toMavenNode(context: Context): MavenDependencyNodeWithContext =
     context.toMavenDependencyNode(coordinates = toMavenCoordinates(), isBom = startsWith("bom:"))
