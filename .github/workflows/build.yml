@@ -75,9 +75,6 @@ jobs:
           - platform: macos-x64
             runner: macos-15-intel
             executable_extension: ""
-          - platform: macos-arm64
-            runner: macos-15
-            executable_extension: ""
           - platform: windows-x64
             runner: windows-2025
             executable_extension: ".exe"

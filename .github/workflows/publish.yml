@@ -120,7 +120,6 @@ jobs:
             bazel-kmp-resolver-linux-x64
             bazel-kmp-resolver-linux-arm64
             bazel-kmp-resolver-macos-x64
-            bazel-kmp-resolver-macos-arm64
             bazel-kmp-resolver-windows-x64.exe
           )
 
