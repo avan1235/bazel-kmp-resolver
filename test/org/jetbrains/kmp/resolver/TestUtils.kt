@@ -31,6 +31,7 @@ internal suspend fun <T> testMultiplatformResolver(
     substitutions: Substitutions,
     platforms: Set<ManifestPlatform>,
     credentials: RequestCredentials,
+    ignoredPublishedChecksums: Set<String> = emptySet(),
     block: suspend (MultiplatformResolver) -> T,
 ): T =
     withAuthenticatingHttpClient(credentials = credentials, connectTimeout = 30.seconds) {
@@ -49,6 +50,7 @@ internal suspend fun <T> testMultiplatformResolver(
                         retryPolicy = RetryPolicy.DEFAULT,
                     ),
                 substitutions = substitutions,
+                ignoredPublishedChecksums = ignoredPublishedChecksums,
                 npmResolver =
                     when {
                         ManifestPlatform.WASM_JS in platforms ->

@@ -38,6 +38,12 @@ internal const val LOCAL_TYPED_AAR_DEPENDENT_COORDINATES = "com.example:widget-t
  */
 internal const val LOCAL_UNTYPED_AAR_DEPENDENT_COORDINATES = "com.example:widget-user:1.0"
 
+/**
+ * Coordinates of the KMP library served by the repository of [withLocalMavenRepository] whose
+ * Android variant, [LOCAL_KMP_AAR_VARIANT_COORDINATES], is an aar whose module metadata also
+ * declares a sources variant under the name of a jar the repository does not serve, as JitPack
+ * publishes Android libraries.
+ */
 internal const val LOCAL_KMP_AAR_COORDINATES = "com.example:kmp-widget:1.0"
 internal const val LOCAL_KMP_AAR_VARIANT_COORDINATES = "com.example:kmp-widget-android:1.0"
 internal const val LOCAL_KMP_AAR_DEPENDENT_COORDINATES = "com.example:kmp-widget-user:1.0"
@@ -58,6 +64,18 @@ internal const val LOCAL_KMP_REDIRECT_JVM_VARIANT_COORDINATES = "com.example:kmp
  */
 internal const val LOCAL_POM_ONLY_COORDINATES = "com.example:aggregate:1.0"
 
+/**
+ * Coordinates of the JVM library served by the repository of [withLocalMavenRepository] whose jar
+ * does not match any of the checksums the repository publishes for it (as the iOS klibs of
+ * `me.tatarka.inject:kotlin-inject-runtime:0.9.0` on Maven Central): its POM and the checksum files
+ * of its POM are consistent, only the checksums of the jar are wrong.
+ */
+internal const val LOCAL_MISMATCHED_CHECKSUMS_COORDINATES = "com.example:corrupt:1.0"
+
+/** Content of the jar of [LOCAL_MISMATCHED_CHECKSUMS_COORDINATES], to digest in tests. */
+internal val LOCAL_MISMATCHED_CHECKSUMS_JAR_CONTENT: ByteArray =
+    "not a jar, but served as one".toByteArray()
+
 private val DIGEST_ALGORITHMS =
     mapOf("sha512" to "SHA-512", "sha256" to "SHA-256", "sha1" to "SHA-1", "md5" to "MD5")
 
@@ -67,8 +85,9 @@ private val DIGEST_ALGORITHMS =
  * Android library [LOCAL_AAR_COORDINATES] as a POM and an aar, and the JVM libraries
  * [LOCAL_TYPED_AAR_DEPENDENT_COORDINATES] and [LOCAL_UNTYPED_AAR_DEPENDENT_COORDINATES] depending
  * on it, the KMP libraries [LOCAL_KMP_AAR_COORDINATES] and [LOCAL_KMP_REDIRECT_COORDINATES] with
- * their platform-specific modules, and the POM-only library [LOCAL_POM_ONLY_COORDINATES], and
- * stopped once [block] returns.
+ * their platform-specific modules, the POM-only library [LOCAL_POM_ONLY_COORDINATES] and the JVM
+ * library [LOCAL_MISMATCHED_CHECKSUMS_COORDINATES] whose jar matches none of its published
+ * checksums, and stopped once [block] returns.
  */
 internal fun <T> withLocalMavenRepository(block: (String) -> T): T {
     val repository =
@@ -78,6 +97,7 @@ internal fun <T> withLocalMavenRepository(block: (String) -> T): T {
             publishKmpAarLibraries(it)
             publishKmpRedirectLibrary(it)
             publishPomOnlyLibrary(it)
+            publishMismatchedChecksumsLibrary(it)
         }
     val handler = HttpHandler { exchange ->
         val path = exchange.requestURI.path.removePrefix("/")
@@ -278,6 +298,11 @@ private fun publishKmpAarLibraries(repository: Path) {
                   "name": "releaseRuntimeElements-published",
                   "attributes": {"org.gradle.category": "library", "org.gradle.jvm.environment": "android", "org.gradle.usage": "java-runtime", "org.jetbrains.kotlin.platform.type": "androidJvm"},
                   "files": [{"name": "kmp-widget-android-1.0.aar", "url": "kmp-widget-android-1.0.aar"}]
+                },
+                {
+                  "name": "releaseSourcesElements-published",
+                  "attributes": {"org.gradle.category": "documentation", "org.gradle.dependency.bundling": "external", "org.gradle.docstype": "sources", "org.gradle.usage": "java-runtime"},
+                  "files": [{"name": "kmp-widget-android-1.0.jar", "url": "kmp-widget-android-1.0.jar"}]
                 }
               ]
             }
@@ -415,6 +440,36 @@ private fun publishKmpRedirectLibrary(repository: Path) {
         jar.putNextEntry(ZipEntry("com/example/Ui.txt"))
         jar.write("ui".toByteArray())
         jar.closeEntry()
+    }
+}
+
+/**
+ * Publishes [LOCAL_MISMATCHED_CHECKSUMS_COORDINATES]: the checksum files of its jar are written
+ * explicitly, digesting another content than the one the jar is served with, so that they win over
+ * the checksums the repository computes.
+ */
+private fun publishMismatchedChecksumsLibrary(repository: Path) {
+    val directory = repository.resolve("com/example/corrupt/1.0").createDirectories()
+    directory
+        .resolve("corrupt-1.0.pom")
+        .writeText(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>com.example</groupId><artifactId>corrupt</artifactId><version>1.0</version>
+              <packaging>jar</packaging>
+            </project>
+            """
+                .trimIndent(),
+        )
+    val jar = directory.resolve("corrupt-1.0.jar")
+    jar.outputStream().use { it.write(LOCAL_MISMATCHED_CHECKSUMS_JAR_CONTENT) }
+    val publishedContent = "the content the publisher digested".toByteArray()
+    DIGEST_ALGORITHMS.forEach { (extension, algorithm) ->
+        directory
+            .resolve("corrupt-1.0.jar.$extension")
+            .writeText(MessageDigest.getInstance(algorithm).digest(publishedContent).toHexString())
     }
 }
 

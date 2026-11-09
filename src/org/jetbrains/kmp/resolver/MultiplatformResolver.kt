@@ -15,9 +15,12 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import org.jetbrains.amper.dependency.resolution.*
+import org.jetbrains.amper.dependency.resolution.diagnostics.DependencyResolutionDiagnostics
 import org.jetbrains.amper.dependency.resolution.diagnostics.Message
 import org.jetbrains.amper.dependency.resolution.diagnostics.PlatformsAreNotSupported
 import org.jetbrains.amper.dependency.resolution.diagnostics.Severity
+import org.jetbrains.amper.dependency.resolution.diagnostics.UnableToDownloadChecksums
+import org.jetbrains.amper.dependency.resolution.diagnostics.UnableToDownloadFile
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 
@@ -339,6 +342,14 @@ internal class MultiplatformResolver(
     private val platforms: Set<ManifestPlatform>,
     private val repositories: List<MavenRepository>,
     private val substitutions: Substitutions,
+    /**
+     * `group:artifact:version` of the libraries whose published checksums are ignored: Amper's
+     * failure to verify their artifacts against the checksums their repository publishes is not an
+     * error, and the manifest records the sha256 of the content actually downloaded instead of a
+     * published checksum. For libraries published with checksums not matching their files, which
+     * Gradle (verifying nothing) resolves anyway.
+     */
+    private val ignoredPublishedChecksums: Set<String> = emptySet(),
     private val httpClient: HttpClient,
     private val artifactResolver: ArtifactUrlResolver,
     /**
@@ -374,6 +385,13 @@ internal class MultiplatformResolver(
                     "which is not supported: versions are picked by conflict resolution among the requested ones"
             }
         }
+        ignoredPublishedChecksums.forEach { coordinates ->
+            require(
+                coordinates.split(":").size == 3 && coordinates.split(":").none { it.isEmpty() },
+            ) {
+                "Ignored published checksums must name a library as group:artifact:version, got '$coordinates'"
+            }
+        }
     }
 
     internal suspend fun resolve(coordinatesBag: Collection<String>): List<MultiplatformVariant> {
@@ -383,6 +401,13 @@ internal class MultiplatformResolver(
         if (substitutions.isNotEmpty()) {
             logger.info(
                 "Using substitutions:\n${substitutions.entries.joinToString("\n") { "  ${it.key} -> ${it.value.gav}" }}",
+            )
+        }
+        if (ignoredPublishedChecksums.isNotEmpty()) {
+            logger.warn(
+                "Ignoring the published checksums of the following libraries, the manifest records the sha256 of their downloaded content:\n${
+                    ignoredPublishedChecksums.sorted().joinToString("\n") { "  $it" }
+                }",
             )
         }
         logger.info("Platforms: ${orderedPlatforms.joinToString { it.cliName }}")
@@ -575,7 +600,7 @@ internal class MultiplatformResolver(
         val errorsByNode =
             nodes
                 .map { node ->
-                    node.gav to node.resolutionErrors(logger)
+                    node.gav to node.resolutionErrors(logger, ignoredPublishedChecksums)
                 }
                 .filter { (_, errors) ->
                     errors.isNotEmpty()
@@ -645,6 +670,7 @@ internal class MultiplatformResolver(
                             substitutions = substitutions,
                             kmpParents = kmpParents,
                             possibleDependencies = possibleDependencies,
+                            ignoredPublishedChecksums = ignoredPublishedChecksums,
                             repositories = repositories,
                         )
 
@@ -657,6 +683,7 @@ internal class MultiplatformResolver(
                                     substitutions = substitutions,
                                     kmpParents = kmpParents,
                                     possibleDependencies = possibleDependencies,
+                                    ignoredPublishedChecksums = ignoredPublishedChecksums,
                                     repositories = repositories,
                                 )
 
@@ -666,6 +693,7 @@ internal class MultiplatformResolver(
                                     substitutions = substitutions,
                                     kmpParents = kmpParents,
                                     possibleDependencies = possibleDependencies,
+                                    ignoredPublishedChecksums = ignoredPublishedChecksums,
                                     repositories = repositories,
                                 )
 
@@ -675,6 +703,7 @@ internal class MultiplatformResolver(
                                     substitutions = substitutions,
                                     kmpParents = kmpParents,
                                     possibleDependencies = possibleDependencies,
+                                    ignoredPublishedChecksums = ignoredPublishedChecksums,
                                     repositories = repositories,
                                 )
                         }
@@ -931,16 +960,54 @@ private val MavenDependencyNode.gav
             version = resolvedVersion().orUnspecified(),
         )
 
-private fun DependencyNode.resolutionErrors(logger: Logger): List<Message> =
-    messages
+private fun DependencyNode.resolutionErrors(
+    logger: Logger,
+    ignoredPublishedChecksums: Set<String>,
+): List<Message> {
+    val documentationFiles = documentationFileNames()
+    val publishedChecksumsIgnored =
+        this is MavenDependencyNode && gav.gav in ignoredPublishedChecksums
+    return messages
         .filter { it.severity >= Severity.ERROR }
         .mapNotNull {
-            when (it) {
+            when {
                 // the library is not published for the platform being resolved, it is simply not
                 // part of this platform's graph
-                is PlatformsAreNotSupported -> {
+                it is PlatformsAreNotSupported -> {
                     logger.warn(
                         "[${it.coordinates}] skipping unsupported platform(s): ${it.unsupportedPlatforms.joinToString { p -> p.pretty }}",
+                    )
+                    null
+                }
+
+                // a sources or javadoc file the metadata declares but the repository does not
+                // serve (JitPack lists the documentation variants of an Android library under the
+                // name of its main jar, which does not exist): the resolver only records the
+                // sources jars it finds, the library itself is unaffected
+                it is UnableToDownloadFile && it.fileName in documentationFiles -> {
+                    logger.warn(
+                        "[${it.coordinates}] skipping documentation file ${it.fileName}, which cannot be downloaded: ${it.message}",
+                    )
+                    null
+                }
+
+                it is UnableToDownloadChecksums && it.fileName in documentationFiles -> {
+                    logger.warn(
+                        "[${it.coordinates}] skipping documentation file ${it.fileName}, whose checksums cannot be downloaded: ${it.message}",
+                    )
+                    null
+                }
+
+                // the file does not match the checksums its repository publishes, which the
+                // library is explicitly allowed to: the manifest records the sha256 of the
+                // content the resolver downloads itself (see
+                // [UnresolvedMultiplatformLibraryArtifact.resolve]); any other download failure
+                // of the library stays an error
+                it is UnableToDownloadFile &&
+                    publishedChecksumsIgnored &&
+                    it.isHashesMismatch() -> {
+                    logger.warn(
+                        "[${it.coordinates}] ignoring the published checksums of ${it.fileName}, which the file does not match: ${it.details}",
                     )
                     null
                 }
@@ -948,6 +1015,33 @@ private fun DependencyNode.resolutionErrors(logger: Logger): List<Message> =
                 else -> it
             }
         }
+}
+
+/**
+ * Whether the file failed its download because its content does not match the checksums the
+ * repository publishes, rather than because it could not be fetched.
+ */
+private fun UnableToDownloadFile.isHashesMismatch(): Boolean = childMessages.any { child ->
+    child.id == DependencyResolutionDiagnostics.HashesMismatch.id ||
+        (child is UnableToDownloadFile && child.isHashesMismatch())
+}
+
+/**
+ * Names of the sources and javadoc files the metadata of this node declares, if it is a Maven
+ * library.
+ */
+private fun DependencyNode.documentationFileNames(): Set<String> =
+    when (this) {
+        is MavenDependencyNode ->
+            (dependency as MavenDependencyImpl)
+                .files(withSources = true)
+                .filterIsInstance<DependencyFileImpl>()
+                .filter { it.isDocumentation }
+                .map { it.fullName }
+                .toSet()
+
+        else -> emptySet()
+    }
 
 // Nodes are collected per platform, so a node's files all belong to the platform being resolved.
 private fun DependencyFileImpl.isSourceJar(): Boolean =
@@ -1028,7 +1122,12 @@ internal fun <T> selectSourceJar(
 
 private data class UnresolvedMultiplatformLibraryArtifact(
     val fileName: String,
-    val integrity: MultiplatformLibraryArtifactIntegrity,
+    /**
+     * The strongest checksum the repository publishes for the file; null when the published
+     * checksums of the library are ignored, the integrity then being the sha256 of the downloaded
+     * content (see [resolve]).
+     */
+    val integrity: MultiplatformLibraryArtifactIntegrity?,
     val groupId: String,
     val artifactId: String,
     val version: String,
@@ -1073,6 +1172,7 @@ private sealed class UnresolvedMultiplatformLibrary(
     private val substitutions: Substitutions,
     private val kmpParents: KmpParents,
     private val possibleDependencies: Set<SubstitutionId>,
+    private val ignoredPublishedChecksums: Set<String>,
 ) {
     private val runtimeNode: MavenDependencyNode? =
         resolvedNodes.singleNodeOfScope(ResolutionScope.RUNTIME)
@@ -1156,11 +1256,15 @@ private sealed class UnresolvedMultiplatformLibrary(
             // [MultiplatformLibraryArtifactIntegrity.Sha1]);
             // Bazel accepts it in `integrity` strings.
             integrity =
-                listOf("sha512", "sha256", "sha1").firstNotNullOfOrNull { algorithm ->
-                    file.getExpectedHash(HashAlgorithm(algorithm))?.let { hash ->
-                        MultiplatformLibraryArtifactIntegrity.fromHash(algorithm, hash)
-                    }
-                } ?: error("could not find hash for artifact $file"),
+                when (variantId.gav) {
+                    in ignoredPublishedChecksums -> null
+                    else ->
+                        listOf("sha512", "sha256", "sha1").firstNotNullOfOrNull { algorithm ->
+                            file.getExpectedHash(HashAlgorithm(algorithm))?.let { hash ->
+                                MultiplatformLibraryArtifactIntegrity.fromHash(algorithm, hash)
+                            }
+                        } ?: error("could not find hash for artifact $file")
+                },
         )
     }
 
@@ -1171,6 +1275,7 @@ private sealed class UnresolvedMultiplatformLibrary(
         substitutions: Substitutions,
         kmpParents: KmpParents,
         possibleDependencies: Set<SubstitutionId>,
+        ignoredPublishedChecksums: Set<String>,
     ) :
         UnresolvedMultiplatformLibrary(
             resolvedNodes,
@@ -1178,6 +1283,7 @@ private sealed class UnresolvedMultiplatformLibrary(
             substitutions,
             kmpParents,
             possibleDependencies,
+            ignoredPublishedChecksums,
         ) {
         private val classifiedKlibs: List<Pair<KlibRole, DependencyFileImpl>> by lazy {
             classifyKlibs(variantId, files.filter { file -> file.isKlib() }) { it.fullName }
@@ -1204,6 +1310,7 @@ private sealed class UnresolvedMultiplatformLibrary(
         substitutions: Substitutions,
         kmpParents: KmpParents,
         possibleDependencies: Set<SubstitutionId>,
+        ignoredPublishedChecksums: Set<String>,
     ) :
         UnresolvedMultiplatformLibrary(
             resolvedNodes,
@@ -1211,6 +1318,7 @@ private sealed class UnresolvedMultiplatformLibrary(
             substitutions,
             kmpParents,
             possibleDependencies,
+            ignoredPublishedChecksums,
         ) {
         /**
          * The `.aar` of this library or, when it publishes none, its classpath jar: a JVM library,
@@ -1236,6 +1344,7 @@ private sealed class UnresolvedMultiplatformLibrary(
         substitutions: Substitutions,
         kmpParents: KmpParents,
         possibleDependencies: Set<SubstitutionId>,
+        ignoredPublishedChecksums: Set<String>,
     ) :
         UnresolvedMultiplatformLibrary(
             resolvedNodes,
@@ -1243,6 +1352,7 @@ private sealed class UnresolvedMultiplatformLibrary(
             substitutions,
             kmpParents,
             possibleDependencies,
+            ignoredPublishedChecksums,
         ) {
         suspend fun jar(): UnresolvedMultiplatformLibraryArtifact {
             val jars = files.filter { file -> file.isClasspathJar() }
@@ -1264,6 +1374,7 @@ private sealed class UnresolvedMultiplatformLibrary(
         substitutions: Substitutions,
         kmpParents: KmpParents,
         possibleDependencies: Set<SubstitutionId>,
+        ignoredPublishedChecksums: Set<String>,
     ) :
         UnresolvedMultiplatformLibrary(
             resolvedNodes,
@@ -1271,6 +1382,7 @@ private sealed class UnresolvedMultiplatformLibrary(
             substitutions,
             kmpParents,
             possibleDependencies,
+            ignoredPublishedChecksums,
         ) {
         init {
             require(files.none { file -> !file.isDocumentation }) {
@@ -1297,12 +1409,32 @@ private suspend fun UnresolvedMultiplatformLibraryArtifact.resolve(
     }
 
     return MavenMultiplatformLibraryArtifact(
-        integrity = integrity,
+        integrity = integrity ?: downloadedContentIntegrity(artifactUrlResolver, urls),
         groupId = groupId,
         artifactId = artifactId,
         version = version,
         urls = urls,
     )
+}
+
+/**
+ * The sha256 of the content served at [urls], which must all serve the same content, so that the
+ * manifest pins a checksum valid whichever of its URLs Bazel downloads the artifact from.
+ */
+private suspend fun UnresolvedMultiplatformLibraryArtifact.downloadedContentIntegrity(
+    artifactUrlResolver: ArtifactUrlResolver,
+    urls: List<String>,
+): MultiplatformLibraryArtifactIntegrity.Sha256 {
+    val sha256ByUrl = coroutineScope {
+        urls.map { url -> async { url to artifactUrlResolver.contentSha256(url) } }.awaitAll()
+    }
+    val sha256s = sha256ByUrl.map { (_, sha256) -> sha256 }.distinct()
+    require(sha256s.size == 1) {
+        "[$groupId:$artifactId:$version] artifact $fileName has different contents in the repositories serving it, its published checksums being ignored no single sha256 can be recorded:\n${
+            sha256ByUrl.joinToString("\n") { (url, sha256) -> "  $url: sha256 $sha256" }
+        }"
+    }
+    return MultiplatformLibraryArtifactIntegrity.Sha256(sha256s.single())
 }
 
 private suspend fun UnresolvedMultiplatformLibrary.Klib.resolve(

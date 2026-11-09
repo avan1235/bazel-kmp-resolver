@@ -113,6 +113,62 @@ class CheckBazelManifestCommandTest {
         assertContains(result.stderr, "is not a manifest")
     }
 
+    @Test
+    fun `ignored published checksums are a resolution input recorded in the manifest`(): Unit =
+        withLocalMavenRepository { repository ->
+            runBlocking {
+                val ignoring =
+                    "--ignore-published-checksums=$LOCAL_MISMATCHED_CHECKSUMS_COORDINATES"
+                val inputs =
+                    resolutionInputs(repository) +
+                        "--coordinate=$LOCAL_MISMATCHED_CHECKSUMS_COORDINATES"
+                val manifestFile = generateManifest(inputs + ignoring)
+
+                val manifestText = manifestFile.readText()
+                assertContains(
+                    manifestText,
+                    """"askedIgnoredPublishedChecksums":["$LOCAL_MISMATCHED_CHECKSUMS_COORDINATES"]""",
+                )
+                val manifest = Json.decodeFromString(BazelManifest.serializer(), manifestText)
+                assertEquals(
+                    listOf(LOCAL_MISMATCHED_CHECKSUMS_COORDINATES),
+                    manifest.askedIgnoredPublishedChecksums,
+                )
+                val upToDate =
+                    BazelKmpResolverCommand()
+                        .test(
+                            listOf("check-bazel-manifest", "--manifest-file=$manifestFile") +
+                                inputs +
+                                ignoring,
+                        )
+                assertEquals(0, upToDate.statusCode, upToDate.output)
+                val stale =
+                    BazelKmpResolverCommand()
+                        .test(
+                            listOf("check-bazel-manifest", "--manifest-file=$manifestFile") +
+                                inputs,
+                        )
+                assertNotEquals(0, stale.statusCode, stale.output)
+                assertContains(stale.stderr, "is stale")
+            }
+        }
+
+    @Test
+    fun `an ignored published checksum must name a library with its version`(): Unit = runBlocking {
+        val result =
+            BazelKmpResolverCommand()
+                .test(
+                    listOf(
+                        "check-bazel-manifest",
+                        "--manifest-file=/dev/null",
+                        "--ignore-published-checksums=com.example:corrupt",
+                    ) + resolutionInputs("https://repo1.maven.org/maven2"),
+                )
+
+        assertNotEquals(0, result.statusCode, result.output)
+        assertContains(result.stderr, "'com.example:corrupt' is not group:artifact:version")
+    }
+
     private fun resolutionInputs(repository: String): List<String> =
         listOf(
             "--coordinate=$LOCAL_LIBRARY_COORDINATES",

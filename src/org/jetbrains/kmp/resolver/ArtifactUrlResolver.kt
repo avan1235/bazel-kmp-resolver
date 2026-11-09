@@ -4,6 +4,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse.BodyHandlers
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration
 import kotlin.time.toJavaDuration
@@ -76,6 +77,36 @@ internal class ArtifactUrlResolver(
                     ArtifactFile.NotFound
                 }
             }
+        }
+    }
+
+    private val sha256ByUrl = ConcurrentHashMap<String, String>()
+
+    /**
+     * The lowercase hexadecimal sha256 of the content served at [artifactUrl], downloaded through
+     * [httpClient]: the integrity recorded for the artifacts whose published checksums are ignored.
+     * Fails when the URL does not serve the artifact.
+     */
+    suspend fun contentSha256(artifactUrl: String): String {
+        return sha256ByUrl.getOrPut(artifactUrl) {
+            logger.info("[$artifactUrl] downloading artifact to digest its content...")
+            val uri = URI(artifactUrl)
+            val request =
+                HttpRequest.newBuilder(uri)
+                    .GET()
+                    .timeout(requestTimeout.toJavaDuration())
+                    .header("User-Agent", USER_AGENT)
+                    .build()
+            val response =
+                hostSemaphore(uri).withPermit {
+                    httpClient.sendWithRetry(request, BodyHandlers.ofByteArray(), retryPolicy)
+                }
+            require(response.statusCode() in 200..299) {
+                "[$artifactUrl] could not be downloaded to digest its content: HTTP ${response.statusCode()}"
+            }
+            val sha256 = MessageDigest.getInstance("SHA-256").digest(response.body()).toHexString()
+            logger.warn("[$artifactUrl] sha256 of the downloaded content: $sha256")
+            sha256
         }
     }
 

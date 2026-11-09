@@ -45,7 +45,7 @@ needs no mapping table.
 | `jvm`                 | `jvm` variants, and `redirect` variants of platform `jvm` |
 
 The **resolution inputs** of a manifest are `--coordinate`, `--platform`, `--repository`, `--substitution`,
-`--npm-registry` and `--npm-package-version`: they are digested into its `inputsHash`, and `check-bazel-manifest`
+`--ignore-published-checksums`, `--npm-registry` and `--npm-package-version`: they are digested into its `inputsHash`, and `check-bazel-manifest`
 takes the same ones. The other options of `generate-bazel-manifest` (`--cache-dir`, credentials, timeouts, Node.js)
 change how a resolution runs, not the manifest. `--node-executable` and `--npm-cli-js` are only required with
 `--platform=wasmjs`, whose klibs may declare NPM dependencies: no other platform needs Node.js.
@@ -141,6 +141,7 @@ files of this repository.
 | `askedCoordinates`   | `--coordinate` values, sorted.                                                                                                                                        |
 | `askedRepositories`  | `--repository` URLs, in the order they are given, which is the order artifacts are looked up in.                                                                      |
 | `askedSubstitutions` | `--substitution` values as `group:artifact=group:artifact:version`, sorted.                                                                                           |
+| `askedIgnoredPublishedChecksums` | `--ignore-published-checksums` values as `group:artifact:version`, sorted: the libraries whose artifacts may not match the checksums their repository publishes, the `integrity` of their artifacts being the sha256 of the content the resolver downloaded. Absent when there are none. |
 | `libraries`          | The resolved libraries by ID.                                                                                                                                         |
 
 ### Libraries
@@ -239,6 +240,7 @@ without whitespace, with these properties in this order:
 | `coordinates`        | `--coordinate` values, sorted, without duplicates.                                            |
 | `repositories`       | `--repository` URLs in the order they are given, without duplicates.                          |
 | `substitutions`      | `--substitution` values as `group:artifact=group:artifact:version`, sorted; the last value of a repeated key wins. |
+| `ignoredPublishedChecksums` | `--ignore-published-checksums` values as `group:artifact:version`, sorted, without duplicates; **left out when empty**, so that the hashes of manifests predating the option are unchanged. |
 | `npmRegistry`        | `--npm-registry`, `https://registry.npmjs.org` when not given.                                |
 | `npmPackageVersions` | `--npm-package-version` values as `name=version`, sorted; the last value of a repeated name wins. |
 

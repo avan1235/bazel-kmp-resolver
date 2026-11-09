@@ -57,6 +57,27 @@ internal class ResolutionInputsOptions :
             }
             .multiple(required = false)
 
+    val ignoredPublishedChecksums: Set<String> by
+        option(
+                "--ignore-published-checksums",
+                help =
+                    """
+                    `group:artifact:version` of a library whose artifacts do not match the checksums its repository
+                    publishes: the mismatch is not an error, and the manifest records the sha256 of the content actually
+                    downloaded instead. Only that exact library is affected, the platform-specific variant of a KMP library
+                    must be named itself. Can be specified multiple times.
+                    """
+                        .trimIndent(),
+            )
+            .convert {
+                require(it.split(":").size == 3 && it.split(":").none { part -> part.isEmpty() }) {
+                    "'$it' is not group:artifact:version"
+                }
+                it
+            }
+            .multiple(required = false)
+            .unique()
+
     val repositories: List<String> by
         option(
                 "--repository",
@@ -90,6 +111,7 @@ internal class ResolutionInputsOptions :
             coordinates = coordinates,
             repositories = repositories,
             substitutions = substitutions.toMap(),
+            ignoredPublishedChecksums = ignoredPublishedChecksums,
             npmRegistry = npmRegistry,
             npmPackageVersions = npmPackageVersions.toMap(),
         )

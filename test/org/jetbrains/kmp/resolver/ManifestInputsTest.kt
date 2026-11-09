@@ -40,6 +40,7 @@ class ManifestInputsTest {
         coordinates: List<String> = defaultCoordinates,
         repositories: List<String> = defaultRepositories,
         substitutions: Substitutions = defaultSubstitutions,
+        ignoredPublishedChecksums: Collection<String> = emptySet(),
         npmRegistry: String? = null,
         npmPackageVersions: Map<String, String> = defaultNpmPackageVersions,
     ): ManifestInputs =
@@ -48,6 +49,7 @@ class ManifestInputsTest {
             coordinates = coordinates,
             repositories = repositories,
             substitutions = substitutions,
+            ignoredPublishedChecksums = ignoredPublishedChecksums,
             npmRegistry = npmRegistry,
             npmPackageVersions = npmPackageVersions,
         )
@@ -86,6 +88,23 @@ class ManifestInputsTest {
             )
 
         assertEquals(inputs().hash(), shuffled.hash())
+    }
+
+    @Test
+    fun `ignored published checksums are a sorted input, left out of the canonical JSON when empty`() {
+        val ignored =
+            listOf("me.tatarka.inject:kotlin-inject-runtime-iosarm64:0.9.0", "com.example:a:1")
+
+        assertEquals(
+            inputs(ignoredPublishedChecksums = ignored).hash(),
+            inputs(ignoredPublishedChecksums = ignored.reversed() + ignored.first()).hash(),
+        )
+        assertNotEquals(inputs().hash(), inputs(ignoredPublishedChecksums = ignored).hash())
+        assertEquals(
+            ignored.sorted(),
+            inputs(ignoredPublishedChecksums = ignored).ignoredPublishedChecksums,
+        )
+        assertEquals(inputs().hash(), inputs(ignoredPublishedChecksums = emptyList()).hash())
     }
 
     @Test

@@ -1,6 +1,8 @@
 package org.jetbrains.kmp.resolver
 
 import java.security.MessageDigest
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -28,6 +30,15 @@ internal data class ManifestInputs(
     /** `--substitution` values as `group:artifact=group:artifact:version`, sorted. */
     val substitutions: List<String>,
 
+    /**
+     * `--ignore-published-checksums` values as `group:artifact:version`, sorted. Left out of the
+     * canonical JSON when empty, so that the hashes of the manifests predating the option (none of
+     * which ignores published checksums) are unchanged.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val ignoredPublishedChecksums: List<String> = emptyList(),
+
     /** URL of the registry the NPM dependencies of `wasm_js` klibs are resolved against. */
     val npmRegistry: String,
 
@@ -53,6 +64,7 @@ internal data class ManifestInputs(
             coordinates: Collection<String>,
             repositories: List<String>,
             substitutions: Substitutions,
+            ignoredPublishedChecksums: Collection<String> = emptySet(),
             npmRegistry: String?,
             npmPackageVersions: Map<String, String>,
         ): ManifestInputs =
@@ -64,6 +76,7 @@ internal data class ManifestInputs(
                     substitutions
                         .map { (substituted, substitute) -> "$substituted=${substitute.gav}" }
                         .sorted(),
+                ignoredPublishedChecksums = ignoredPublishedChecksums.distinct().sorted(),
                 npmRegistry = npmRegistry ?: NpmResolver.DEFAULT_REGISTRY_URL,
                 npmPackageVersions =
                     npmPackageVersions.map { (name, version) -> "$name=$version" }.sorted(),

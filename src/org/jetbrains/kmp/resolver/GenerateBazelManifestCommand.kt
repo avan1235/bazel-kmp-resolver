@@ -213,6 +213,7 @@ class GenerateBazelManifestCommand : SuspendingCliktCommand("generate-bazel-mani
                             httpClient = httpClient,
                             artifactResolver = artifactResolver,
                             substitutions = inputs.substitutions.toMap(),
+                            ignoredPublishedChecksums = inputs.ignoredPublishedChecksums,
                             npmResolver = npmResolver,
                         )
                     BazelManifest.of(

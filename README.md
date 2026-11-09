@@ -33,7 +33,7 @@ Only `wasmjs` needs Node.js, to resolve the NPM dependencies its klibs declare: 
 ### Pinned manifests
 
 The manifest records the resolution inputs it is generated from (`--coordinate`, `--platform`, `--repository`,
-`--substitution`, `--npm-registry`, `--npm-package-version`) as an `inputsHash`, along with its `schemaVersion` and the
+`--substitution`, `--ignore-published-checksums`, `--npm-registry`, `--npm-package-version`) as an `inputsHash`, along with its `schemaVersion` and the
 `resolverVersion`. `check-bazel-manifest` takes the same inputs and exits with a non-zero status when the manifest was
 generated from other inputs or follows another schema, telling that a committed manifest must be generated again:
 

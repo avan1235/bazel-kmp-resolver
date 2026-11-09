@@ -1,5 +1,6 @@
 package org.jetbrains.kmp.resolver
 
+import java.security.MessageDigest
 import kotlin.io.path.ExperimentalPathApi
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.deleteRecursively
@@ -8,6 +9,7 @@ import kotlin.io.path.walk
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -837,6 +839,99 @@ class MultiplatformResolverTest {
             assertDoesNotThrow {
                 resolver.resolve(coordinates)
             }
+        }
+    }
+
+    @Test
+    fun `an artifact not matching its published checksums is an error`(): Unit =
+        withLocalMavenRepository { repository ->
+            runBlocking {
+                val error =
+                    assertFailsWith<IllegalArgumentException> {
+                        testMultiplatformResolver(
+                            cachePath = createTempDirectory("resolution-cache"),
+                            repositories = listOf(repository),
+                            substitutions = emptyMap(),
+                            platforms = setOf(ManifestPlatform.Jvm),
+                            credentials = noCredentials,
+                        ) { resolver ->
+                            resolver.resolve(listOf(LOCAL_MISMATCHED_CHECKSUMS_COORDINATES))
+                        }
+                    }
+
+                val message = error.message.orEmpty()
+                assertTrue(message.contains("Amper resolution failed"), message)
+                assertTrue(message.contains(LOCAL_MISMATCHED_CHECKSUMS_COORDINATES), message)
+                assertTrue(message.contains("corrupt-1.0.jar"), message)
+            }
+        }
+
+    @Test
+    fun `ignoring the published checksums of another library does not cover the mismatch`(): Unit =
+        withLocalMavenRepository { repository ->
+            runBlocking {
+                val error =
+                    assertFailsWith<IllegalArgumentException> {
+                        testMultiplatformResolver(
+                            cachePath = createTempDirectory("resolution-cache"),
+                            repositories = listOf(repository),
+                            substitutions = emptyMap(),
+                            platforms = setOf(ManifestPlatform.Jvm),
+                            credentials = noCredentials,
+                            // the same group and artifact at another version, and another library
+                            ignoredPublishedChecksums =
+                                setOf("com.example:corrupt:2.0", LOCAL_LIBRARY_COORDINATES),
+                        ) { resolver ->
+                            resolver.resolve(
+                                listOf(
+                                    LOCAL_MISMATCHED_CHECKSUMS_COORDINATES,
+                                    LOCAL_LIBRARY_COORDINATES,
+                                ),
+                            )
+                        }
+                    }
+
+                val message = error.message.orEmpty()
+                assertTrue(message.contains(LOCAL_MISMATCHED_CHECKSUMS_COORDINATES), message)
+            }
+        }
+
+    @Test
+    fun `a library whose published checksums are ignored records the sha256 of its downloaded content`():
+        Unit = withLocalMavenRepository { repository ->
+        runBlocking {
+            val coordinates =
+                listOf(LOCAL_MISMATCHED_CHECKSUMS_COORDINATES, LOCAL_LIBRARY_COORDINATES)
+            val actual =
+                testMultiplatformResolver(
+                    cachePath = createTempDirectory("resolution-cache"),
+                    repositories = listOf(repository),
+                    substitutions = emptyMap(),
+                    platforms = setOf(ManifestPlatform.Jvm),
+                    credentials = noCredentials,
+                    ignoredPublishedChecksums = setOf(LOCAL_MISMATCHED_CHECKSUMS_COORDINATES),
+                ) { resolver ->
+                    resolver.resolve(coordinates)
+                }
+
+            val variants = actual.filterIsInstance<MultiplatformVariant.Jvm>()
+            assertEquals(coordinates.toSet(), variants.map { it.id.gav }.toSet(), "$actual")
+            val corrupt = variants.single { it.id.gav == LOCAL_MISMATCHED_CHECKSUMS_COORDINATES }
+            assertEquals(
+                listOf("com/example/corrupt/1.0/corrupt-1.0.jar"),
+                corrupt.jar.urls.map { it.removePrefix(repository) },
+            )
+            assertEquals(
+                MultiplatformLibraryArtifactIntegrity.Sha256(
+                    MessageDigest.getInstance("SHA-256")
+                        .digest(LOCAL_MISMATCHED_CHECKSUMS_JAR_CONTENT)
+                        .toHexString(),
+                ),
+                corrupt.jar.integrity,
+            )
+            // the other library keeps the strongest checksum its repository publishes
+            val hello = variants.single { it.id.gav == LOCAL_LIBRARY_COORDINATES }
+            assertEquals("sha512", hello.jar.integrity.algorithm)
         }
     }
 

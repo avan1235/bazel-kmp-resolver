@@ -24,6 +24,12 @@ internal data class BazelManifest(
     val askedCoordinates: List<String>,
     val askedRepositories: List<String>,
     val askedSubstitutions: List<String>,
+
+    /**
+     * The libraries whose published checksums were ignored, their artifacts' integrity being the
+     * sha256 of their downloaded content; absent from the manifests ignoring none.
+     */
+    val askedIgnoredPublishedChecksums: List<String> = emptyList(),
     val libraries: Map<MultiplatformLibraryId, MultiplatformLibrary>,
 ) {
     companion object {
@@ -40,6 +46,7 @@ internal data class BazelManifest(
                 askedCoordinates = inputs.coordinates,
                 askedRepositories = inputs.repositories,
                 askedSubstitutions = inputs.substitutions,
+                askedIgnoredPublishedChecksums = inputs.ignoredPublishedChecksums,
                 libraries = variants.asLibraries(),
             )
     }
